@@ -1719,11 +1719,13 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // failure, socket-ended-mid-response) can't hang the request forever.
   try {
   const hash = req.params.infoHash?.toLowerCase()
+  const reqTag = `[/remux ${hash?.slice(0, 8)}]`
+  console.log(`${reqTag} hit range=${req.headers.range || '-'} q=${new URLSearchParams(req.query).toString() || '-'}`)
   const torrent = hash && client.torrents.find((t) => String(t.infoHash || '').toLowerCase() === hash)
-  if (!torrent) return res.status(404).json({ error: 'Torrent not found' })
+  if (!torrent) { console.log(`${reqTag} 404 torrent not found`); return res.status(404).json({ error: 'Torrent not found' }) }
 
   const videoFile = pickBestVideoFile(torrent.files)
-  if (!videoFile) return res.status(404).json({ error: 'No video file' })
+  if (!videoFile) { console.log(`${reqTag} 404 no video file`); return res.status(404).json({ error: 'No video file' }) }
 
   touchTorrent(hash)
 
@@ -1784,15 +1786,25 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // supported. Even though our "bytes" are a fiction (we re-translate to
   // time on every range request), keeping the model consistent lets the
   // <video> element's seek bar work correctly.
+  //
+  // IMPORTANT: do NOT send Content-Length on plain 200 responses. ffmpeg
+  // transcode output is a fragmented MP4 whose byte-count has no relation
+  // to the source file's length, and advertising the source length makes
+  // Chromium either truncate (output > advertised) or fire MEDIA_ERR_DECODE
+  // when EOF arrives before the promised bytes do. Dropping Content-Length
+  // lets Express fall back to chunked transfer-encoding, which is the
+  // correct contract for an open-ended transcode pipe. Seeking still works
+  // because 206 responses continue to carry Content-Range (required by
+  // spec — the seek bar needs it even if the bytes are fictional).
   res.setHeader('Content-Type', 'video/mp4')
   res.setHeader('Accept-Ranges', 'bytes')
   res.setHeader('Cache-Control', 'no-cache')
   if (isRange && totalSize > 0) {
     res.status(206)
     res.setHeader('Content-Range', `bytes ${startByte}-${endByte}/${totalSize}`)
-  } else if (totalSize > 0) {
-    res.status(200)
-    res.setHeader('Content-Length', String(totalSize))
+    // Still omit Content-Length — endByte is a guess, the real output
+    // length is unknown. Browsers accept 206 + Content-Range without
+    // Content-Length for chunked responses.
   } else {
     res.status(200)
   }
@@ -1840,6 +1852,19 @@ app.get('/remux/:infoHash/*', async (req, res) => {
         '-tune', 'zerolatency',   // no B-frames, smaller GOP — cuts startup from ~8s to ~1s
         '-crf', '23',             // quality-equivalent to source for most 1080p content
         '-pix_fmt', 'yuv420p',    // Safari/older Chromium refuse 10-bit; force 8-bit 4:2:0
+        // Pin H.264 profile + level explicitly. With just the preset/tune
+        // combo above, libx264 will pick profile High and the level based
+        // on resolution, which on 1080p content lands on 4.0/4.1. Most of
+        // the time Chromium accepts that, but every so often (empirically
+        // on certain HEVC sources — Peaky Blinders S01 x265 RARBG was the
+        // reproducer) the auto-picked settings produce a bitstream that
+        // Chromium parses then refuses with MEDIA_ERR_DECODE. Pinning
+        // `main` profile + level 4.0 (≤1080p @ ~20Mbit) gives us a well-
+        // tested Chromium-compatible baseline. Main (no CABAC-with-B-
+        // frames exotica) + zerolatency is what every streaming CDN on
+        // the planet serves; if Chromium can't play this, nothing will.
+        '-profile:v', 'main',
+        '-level:v', '4.0',
       ]
     : ['-c:v', 'copy']
 
@@ -1857,7 +1882,19 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     'pipe:1',
   ]
 
+  console.log(`${reqTag} spawn ffmpeg: needsTranscode=${needsTranscode} vcodec=${meta.vcodec || '(null)'} seek=${seekSec.toFixed(1)}s audio=${audioIdx ?? 'default'}`)
+  console.log(`${reqTag} args: ${ffmpegArgs.join(' ')}`)
+  const ffmpegStartedAt = Date.now()
   const ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+
+  // Count bytes piped to the client so we can tell at a glance whether
+  // ffmpeg produced anything at all before the client disconnected.
+  // A decode error with bytesOut=0 means ffmpeg failed immediately
+  // (likely a decoder/encoder mismatch); with bytesOut>>0 it means
+  // Chromium rejected the bitstream after parsing some of it (codec
+  // profile issue, Content-Length mismatch, etc.).
+  let bytesOut = 0
+  ffmpeg.stdout.on('data', (chunk) => { bytesOut += chunk.length })
   ffmpeg.stdout.pipe(res)
 
   // Keep a ring buffer of recent ffmpeg stderr. Chunks get appended as
@@ -1888,12 +1925,27 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   }
   req.on('close', cleanup)
   req.on('error', cleanup)
-  ffmpeg.on('error', (err) => { console.error('ffmpeg error:', err.message); cleanup() })
-  ffmpeg.on('exit', (code) => {
-    // Log a wider slice (2KB instead of 500 chars) so the root cause
-    // of a transcode crash — which can be dozens of lines before the
-    // final "Conversion failed!" — is visible in the log.
-    if (code && code !== 0 && code !== 255) console.error('ffmpeg exit code', code, stderrBuf.slice(-2000))
+  ffmpeg.on('error', (err) => { console.error(`${reqTag} ffmpeg spawn error: ${err.message}`); cleanup() })
+  ffmpeg.on('exit', (code, signal) => {
+    const durMs = Date.now() - ffmpegStartedAt
+    // Log EVERY exit, not just errors. Silent success (code=0/255 from
+    // SIGTERM on client disconnect) was hiding diagnostics — if Chromium
+    // rejects ffmpeg's output mid-stream, ffmpeg itself exits cleanly,
+    // and before this change the only record was the client-side error.
+    // Now we always see: duration, bytes delivered, exit code, signal,
+    // and the tail of stderr (which carries the stream-mapping decisions
+    // ffmpeg made, invaluable for diagnosing codec/profile mismatches).
+    const tail = stderrBuf.slice(-2000)
+    if (code && code !== 0 && code !== 255) {
+      console.error(`${reqTag} ffmpeg EXIT code=${code} signal=${signal} ${durMs}ms bytesOut=${bytesOut}\n${tail}`)
+    } else {
+      console.log(`${reqTag} ffmpeg exit code=${code} signal=${signal} ${durMs}ms bytesOut=${bytesOut}`)
+      // On clean exit with very few bytes out, dump stderr anyway — that
+      // usually means ffmpeg couldn't decode the input (e.g. HEVC decoder
+      // missing, input stream not ready yet) and bailed without writing
+      // anything useful. Without this we'd stare at a silent log forever.
+      if (bytesOut < 64 * 1024 && tail) console.log(`${reqTag} stderr (short output):\n${tail}`)
+    }
     if (!res.writableEnded) res.end()
   })
   } catch (err) {
