@@ -60,6 +60,26 @@ function upgradeStreamUrlForCodec(url, vcodec) {
   return `${swapped}${sep}transcode=1`
 }
 
+// Normalise any server-relative URL to an absolute one before it reaches
+// the <video> element. In packaged builds the document base is file://,
+// which resolves `/remux/…` to `file:///remux/…` — the browser then fires
+// MEDIA_ERR_SRC_NOT_SUPPORTED (code 4, "container/codec refused"). We hit
+// this repeatedly because setSource is called from half a dozen code paths
+// (initial play, audio-track switch, decode-error escalation, proactive
+// codec upgrade) and it's too easy for one of them to forget the prefix.
+// Funnelling every setSource through this helper makes the fix location-
+// agnostic.
+function toAbsStreamUrl(url) {
+  if (!url || typeof url !== 'string') return url
+  // Already absolute (http/https/blob/data) — leave alone.
+  if (/^(https?:|blob:|data:)/i.test(url)) return url
+  // Only prefix server routes. Anything else (plain magnet strings, etc.)
+  // shouldn't be going to <video src> in the first place, but be safe.
+  if (!/^\/(stream|remux|trailer|api)\b/.test(url)) return url
+  const base = (typeof window !== 'undefined' && window.__API_BASE__) || ''
+  return base + url
+}
+
 // Seed-count health buckets — drives the color-coded dot next to each
 // torrent in the picker. Thresholds chosen from real-world experience:
 // <1 seed = dead (won't start), 1–4 = likely stall halfway through,
@@ -3544,7 +3564,11 @@ function DebugOverlay({
 function App() {
   const [tab, setTab] = useState('browse')
   const [input, setInput] = useState('')
-  const [source, setSource] = useState(null)
+  const [source, _setSourceRaw] = useState(null)
+  // All setSource calls funnel through toAbsStreamUrl so a stray relative
+  // URL can never reach <video src> and trip MEDIA_ERR_SRC_NOT_SUPPORTED
+  // in packaged (file://) builds. See toAbsStreamUrl's comment for why.
+  const setSource = useCallback((url) => _setSourceRaw(toAbsStreamUrl(url)), [])
   const [sourceType, setSourceType] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
