@@ -1,0 +1,107 @@
+{
+  "name": "wardoflix",
+  "productName": "WardoFlix",
+  "private": true,
+  "version": "1.4.5",
+  "description": "WardoFlix — a premium streaming client by Ward",
+  "author": "Ward",
+  "main": "electron/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "concurrently -k -n server,vite,app -c blue,magenta,green \"npm run server\" \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "start:browser": "concurrently \"npm run server\" \"npm run dev -- --open\"",
+    "dev": "vite",
+    "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
+    "server": "node server/index.js",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "electron": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.ward.wardoflix",
+    "productName": "WardoFlix",
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*",
+      ".env",
+      "package.json",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+    ],
+    "asarUnpack": [
+      "node_modules/@ffmpeg-installer/**/*",
+      "node_modules/webtorrent/**/*",
+      "node_modules/bittorrent-dht/**/*",
+      "node_modules/bufferutil/**/*",
+      "node_modules/utf-8-validate/**/*"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "WardoFlix-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WardoFlix"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wardo93",
+        "repo": "wardoflix",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "cors": "^2.8.5",
+    "dlnacasts2": "^0.2.0",
+    "dotenv": "^16.4.5",
+    "electron-updater": "^6.8.3",
+    "express": "^4.21.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "video.js": "^8.23.7",
+    "webtorrent": "^2.8.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.0.1",
+    "electron": "^32.1.0",
+    "electron-builder": "^25.1.8",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
+    "vite": "^7.3.1",
+    "wait-on": "^8.0.1"
+  }
+}
