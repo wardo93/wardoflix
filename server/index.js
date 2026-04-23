@@ -1827,58 +1827,57 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   }
   const duration = meta.duration
 
-  // Advertise the SOURCE file size as our totalSize. The browser uses
-  // this model to pick byte ranges on seek — we translate back to time.
-  const totalSize = videoFile.length || 0
-
-  // Parse Range header ("bytes=12345-" or "bytes=12345-67890")
-  const rangeHeader = req.headers.range
-  let isRange = false
-  let startByte = 0
-  let endByte = totalSize > 0 ? totalSize - 1 : 0
-  if (rangeHeader) {
-    const m = rangeHeader.match(/bytes=(\d+)-(\d*)/)
-    if (m) {
-      isRange = true
-      startByte = parseInt(m[1]) || 0
-      if (m[2]) endByte = parseInt(m[2])
-    }
-  }
-
-  // Compute seek time: explicit ?t= wins, else derive from Range startByte.
-  let seekSec = req.query.t != null ? parseFloat(req.query.t) : 0
-  if (!seekSec && startByte > 0 && duration > 0 && totalSize > 0) {
-    seekSec = (startByte / totalSize) * duration
-    // Stay a few seconds clear of the end so ffmpeg has output to produce
-    seekSec = Math.max(0, Math.min(Math.max(0, duration - 5), seekSec))
-  }
-
-  // Response headers — advertise byte ranges so the browser knows seek is
-  // supported. Even though our "bytes" are a fiction (we re-translate to
-  // time on every range request), keeping the model consistent lets the
-  // <video> element's seek bar work correctly.
+  // Seek is driven strictly by ?t=<seconds>. We used to derive seek time
+  // from the Range header by linearly mapping startByte → duration, but
+  // that scheme is fundamentally broken for transcoded streams:
   //
-  // IMPORTANT: do NOT send Content-Length on plain 200 responses. ffmpeg
-  // transcode output is a fragmented MP4 whose byte-count has no relation
-  // to the source file's length, and advertising the source length makes
-  // Chromium either truncate (output > advertised) or fire MEDIA_ERR_DECODE
-  // when EOF arrives before the promised bytes do. Dropping Content-Length
-  // lets Express fall back to chunked transfer-encoding, which is the
-  // correct contract for an open-ended transcode pipe. Seeking still works
-  // because 206 responses continue to carry Content-Range (required by
-  // spec — the seek bar needs it even if the bytes are fictional).
+  //   Chromium fires 2–3 concurrent Range requests the moment a /remux
+  //   URL starts loading (bytes=0- for the head, bytes=TAIL- for duration
+  //   probe, plus a midpoint sniff). Under the old code we'd spawn a
+  //   separate ffmpeg for each, at different time offsets. Each ffmpeg
+  //   produces its OWN fragmented-MP4 stream with its OWN moov header.
+  //   Chromium tries to splice those bytes together as if they're
+  //   contiguous parts of one file and fails with MEDIA_ERR_DECODE —
+  //   which is exactly what users were hitting on every HEVC / FLV /
+  //   anything-that-required-transcode title.
+  //
+  // The fix is to refuse byte ranges entirely. We advertise
+  // Accept-Ranges: none, ignore the Range header, and always respond 200.
+  // The client can still seek by re-issuing the URL with ?t=<sec>, which
+  // the frontend's codec-error ladder already does. Lossy (can't scrub
+  // via the native seek bar past what's buffered), but correct.
+  const rangeHeader = req.headers.range
+  let seekSec = req.query.t != null ? parseFloat(req.query.t) : 0
+  if (!Number.isFinite(seekSec) || seekSec < 0) seekSec = 0
+  if (duration > 0) seekSec = Math.min(seekSec, Math.max(0, duration - 5))
+
+  // Response headers for a transcoded / remuxed stream.
+  //
+  // Accept-Ranges: none — tells Chromium "this stream is not seekable by
+  // byte". Critical. Previously we advertised `bytes` and Chromium would
+  // fire multiple concurrent Range requests (head + tail + midpoint),
+  // each of which spawned its own ffmpeg at a different time offset. The
+  // three separate fMP4 streams were then spliced at the byte level by
+  // the browser and reliably decoded as garbage. Refusing ranges pins
+  // playback to a single linear stream from ffmpeg — which is what the
+  // /remux pipe was always really delivering.
+  //
+  // No Content-Length — ffmpeg transcode output is a chunked pipe whose
+  // total size is unknown; Chromium will read until EOF.
+  //
+  // Always 200 — we don't honour the Range header. If a client sent
+  // Range: bytes=N- we still return the full stream from our chosen
+  // start time (?t= or 0). Log the header for diagnostics.
+  if (rangeHeader) console.log(`${reqTag} ignoring Range: ${rangeHeader} (transcoded streams are not byte-seekable)`)
   res.setHeader('Content-Type', 'video/mp4')
-  res.setHeader('Accept-Ranges', 'bytes')
+  res.setHeader('Accept-Ranges', 'none')
   res.setHeader('Cache-Control', 'no-cache')
-  if (isRange && totalSize > 0) {
-    res.status(206)
-    res.setHeader('Content-Range', `bytes ${startByte}-${endByte}/${totalSize}`)
-    // Still omit Content-Length — endByte is a guess, the real output
-    // length is unknown. Browsers accept 206 + Content-Range without
-    // Content-Length for chunked responses.
-  } else {
-    res.status(200)
-  }
+  // Some HTTP/1.1 intermediaries like to reuse connections across keep-
+  // alive; with chunked unknown-length responses that's fragile. Ask for
+  // the connection to close when our stream ends so Chromium's decoder
+  // gets a clean EOF signal.
+  res.setHeader('Connection', 'close')
+  res.status(200)
 
   // Audio track selection: ?audio=N selects a specific audio stream index
   const audioIdx = req.query.audio != null ? parseInt(req.query.audio) : null

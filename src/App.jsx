@@ -3902,6 +3902,51 @@ function App() {
       } catch {}
     })
 
+    // ── /remux seek-reload: scrub past the buffered edge via ?t= ─
+    // Transcoded /remux streams advertise Accept-Ranges: none (see the
+    // server for why — byte-ranges on a transcode pipe produce spliced
+    // garbage). That means native byte-range scrubbing is unavailable.
+    // To keep the seek bar useful we intercept user-initiated seeks:
+    // if the target is outside the buffered region AND we're on a
+    // /remux URL, tear down the current player, rebuild the URL with
+    // ?t=<target> appended, and let ffmpeg re-spawn at the new offset.
+    //
+    // The `seeking` event fires DURING the user's seek interaction;
+    // we check once the seek lands (the browser will have snapped to
+    // the buffered edge if it couldn't honour the request exactly).
+    let pendingSeekReload = null
+    player.on('seeking', () => {
+      try {
+        const target = player.currentTime()
+        const src = player.currentSrc() || ''
+        if (!src.includes('/remux/')) return
+        // Check if the target is inside any buffered range. If so, the
+        // native player can handle it directly — no reload needed.
+        const buf = player.buffered()
+        let inBuffer = false
+        for (let i = 0; i < buf.length; i++) {
+          if (target >= buf.start(i) - 1 && target <= buf.end(i) + 1) { inBuffer = true; break }
+        }
+        if (inBuffer) return
+        // Outside the buffered region — schedule a reload. Debounce
+        // because users drag the scrubber which fires many seeking
+        // events in quick succession; we only want to reload once the
+        // user settles on a target.
+        if (pendingSeekReload) clearTimeout(pendingSeekReload)
+        pendingSeekReload = setTimeout(() => {
+          pendingSeekReload = null
+          // Drop any existing ?t= / ?fresh= and set a new one.
+          const base = src.split('?')[0]
+          const qs = new URLSearchParams(src.split('?')[1] || '')
+          qs.delete('t'); qs.delete('fresh')
+          qs.set('t', String(Math.max(0, Math.floor(target))))
+          const reloaded = `${base}?${qs.toString()}`
+          setSource(reloaded)
+          setStreamBaseUrl(base)
+        }, 350)
+      } catch {}
+    })
+
     // ── Autoplay next episode when current one finishes ─────────
     player.on('ended', () => {
       const meta = playingMetadataRef.current
