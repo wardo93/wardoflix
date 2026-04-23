@@ -1420,26 +1420,43 @@ app.get('/api/subtitles', async (req, res) => {
   } catch { res.json({ subtitles: [] }) }
 })
 
-// Hostnames we'll proxy subtitle requests to. Anything else is rejected.
-// Without this whitelist, /api/subtitles/proxy was an open HTTP proxy
-// reachable on localhost — an attacker with local-network access could
-// read arbitrary URLs through our server (SSRF). The current allowlist
-// covers every provider we actually consume from `/api/subtitles`; if we
-// add a new source, extend this set explicitly.
-const SUBTITLE_PROXY_HOSTS = new Set([
-  'opensubtitles-v3.strem.io',
-  'sub.strem.io',
-  'www.opensubtitles.com',
-  'rest.opensubtitles.org',
-  'dl.opensubtitles.org',
-])
+// Hostname suffixes we'll proxy subtitle requests to. Anything else is
+// rejected. The 1.4.8 version used an exact-match Set, which turned out
+// to be way too narrow: Stremio's opensubtitles-v3 addon hands back .url
+// fields pointing to a rotating cast of CDN hosts (download.opensubtitles.org,
+// s.opensubtitles.com, *.opensubtitles-servers.com, etc.) and any URL
+// whose host wasn't in our literal set got 403'd by the proxy — which
+// manifested as "subtitles don't always show" because any sub whose
+// CDN didn't match one of five hardcoded names silently failed to load.
+// Suffix match covers all of a service's subdomains while still keeping
+// us from becoming an open proxy.
+const SUBTITLE_PROXY_HOST_SUFFIXES = [
+  '.opensubtitles.org',
+  '.opensubtitles.com',
+  '.opensubtitles-servers.com',
+  '.strem.io',
+  '.strem.fun',
+  // Some OS endpoints return bare-apex hostnames (no leading dot match)
+  // so also include them explicitly.
+  'opensubtitles.org',
+  'opensubtitles.com',
+]
+
+function isSubtitleHostAllowed(host) {
+  if (!host) return false
+  const lower = host.toLowerCase()
+  return SUBTITLE_PROXY_HOST_SUFFIXES.some(suffix =>
+    suffix.startsWith('.') ? lower.endsWith(suffix) : lower === suffix,
+  )
+}
 
 app.get('/api/subtitles/proxy', async (req, res) => {
   const { url, offset } = req.query
   if (!url || !url.startsWith('https://')) return res.status(400).json({ error: 'Invalid URL' })
   let parsed
   try { parsed = new URL(url) } catch { return res.status(400).json({ error: 'Invalid URL' }) }
-  if (!SUBTITLE_PROXY_HOSTS.has(parsed.host)) {
+  if (!isSubtitleHostAllowed(parsed.host)) {
+    console.warn(`[subs/proxy] refused host=${parsed.host}`)
     return res.status(403).json({ error: 'Host not allowed' })
   }
   try {

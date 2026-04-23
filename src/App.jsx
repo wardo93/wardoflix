@@ -3761,6 +3761,16 @@ function App() {
   //   ≥3 → give up, show the user-facing error dialog
   // Reset to 0 each time a new stream starts via handleStream.
   const remuxFallbackRef = useRef(0)
+  // Set by the /remux seek handler when a user seek outside the buffered
+  // region is about to trigger a URL reload with ?t=<target>. The decode-
+  // error handler checks this ref and skips the stage-1/2 escalation in
+  // that window — otherwise the native <video> seek fires a decode error
+  // (byte-range refused by our Accept-Ranges:none server → immediate
+  // error) BEFORE our debounced reload fires, the error handler wipes
+  // the URL to re-run transcode from 0, and the final reload lands on a
+  // torn-down player and plays from the start. Root cause of "±10s
+  // restarts the whole show" in 1.4.9.
+  const seekReloadPendingRef = useRef(false)
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
 
   useEffect(() => {
@@ -3824,6 +3834,13 @@ function App() {
         if (!err) return
         // MEDIA_ERR_ABORTED=1 fires on user-initiated dispose — ignore it.
         if (err.code === 1) return
+        // If a /remux seek-reload is already scheduled, a decode error
+        // here is almost certainly the native seek hitting our Accept-
+        // Ranges:none server. Don't escalate; the seek handler will
+        // rebuild the URL with ?t=<target> in ~120ms. Escalating here
+        // would wipe ?t= and restart the show from 0 — the exact bug
+        // user reported for ±10s buttons.
+        if (seekReloadPendingRef.current) return
 
         // ── Auto-remux fallback ────────────────────────────────────
         // MEDIA_ERR_DECODE (3) and MEDIA_ERR_SRC_NOT_SUPPORTED (4)
@@ -3910,32 +3927,39 @@ function App() {
     // if the target is outside the buffered region AND we're on a
     // /remux URL, tear down the current player, rebuild the URL with
     // ?t=<target> appended, and let ffmpeg re-spawn at the new offset.
-    //
-    // The `seeking` event fires DURING the user's seek interaction;
-    // we check once the seek lands (the browser will have snapped to
-    // the buffered edge if it couldn't honour the request exactly).
     let pendingSeekReload = null
     player.on('seeking', () => {
       try {
+        // Capture target + src *immediately* as locals. By the time the
+        // debounced callback fires the player can have been torn down
+        // by the decode-error ladder (native seek → Accept-Ranges:none
+        // → MEDIA_ERR_DECODE → error handler kicks in) which resets
+        // currentTime()/currentSrc() to the new empty state. Using
+        // locals instead of calling player.currentTime() inside the
+        // setTimeout preserves the user's intent even if the player
+        // churned underneath us.
         const target = player.currentTime()
         const src = player.currentSrc() || ''
         if (!src.includes('/remux/')) return
-        // Check if the target is inside any buffered range. If so, the
-        // native player can handle it directly — no reload needed.
         const buf = player.buffered()
         let inBuffer = false
         for (let i = 0; i < buf.length; i++) {
           if (target >= buf.start(i) - 1 && target <= buf.end(i) + 1) { inBuffer = true; break }
         }
         if (inBuffer) return
-        // Outside the buffered region — schedule a reload. Debounce
-        // because users drag the scrubber which fires many seeking
-        // events in quick succession; we only want to reload once the
-        // user settles on a target.
+        // Mark a seek-reload as imminent so the decode-error handler
+        // doesn't run its own escalation in the meantime — otherwise
+        // the error handler wipes ?t= from the URL and the show
+        // restarts from zero. Released by the reload itself (below)
+        // or a 2-second safety timer in case something bails.
+        seekReloadPendingRef.current = true
         if (pendingSeekReload) clearTimeout(pendingSeekReload)
         pendingSeekReload = setTimeout(() => {
           pendingSeekReload = null
-          // Drop any existing ?t= / ?fresh= and set a new one.
+          // Short debounce (120ms) so rapid ±10s button mashing coalesces
+          // but we still beat the decode-error ladder. 350ms was too
+          // generous — users reported ±10s restarting the show because
+          // the error handler fired first.
           const base = src.split('?')[0]
           const qs = new URLSearchParams(src.split('?')[1] || '')
           qs.delete('t'); qs.delete('fresh')
@@ -3943,7 +3967,15 @@ function App() {
           const reloaded = `${base}?${qs.toString()}`
           setSource(reloaded)
           setStreamBaseUrl(base)
-        }, 350)
+          // Clear the flag once the source switch has actually landed.
+          // A setTimeout 0 means it clears after React has committed the
+          // new source state; we also have the 2s safety below.
+          setTimeout(() => { seekReloadPendingRef.current = false }, 0)
+        }, 120)
+        // Safety: if for any reason the reload above doesn't happen
+        // (setSource throws, component unmounts, etc.), don't leave the
+        // error handler permanently muted.
+        setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
       } catch {}
     })
 
