@@ -26,6 +26,16 @@ test-*.js
 debug-*.js
 scratch-*.js
 
+# Local notes that contain secrets (PATs, tokens, passwords). The
+# "publish code.txt" file sitting in this directory holds a GitHub PAT
+# used by electron-builder — never commit it. Any plausible filename
+# that looks like a credential stash is excluded here defensively.
+publish*.txt
+*token*.txt
+*secret*.txt
+notes.txt
+TODO.txt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
