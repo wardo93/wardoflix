@@ -643,8 +643,16 @@ app.get('/api/torrents', async (req, res) => {
           const q = year ? `${title} ${String(year).slice(0, 4)}` : title
           const r = await fetchWithTimeout(`https://apibay.org/q.php?q=${encodeURIComponent(q)}`, {}, 7000)
           const results = await r.json().catch(() => [])
+          // Don't pre-filter 0-seeder results. APIBAY often reports stale
+          // seed counts (its tracker-scrape cache lags by hours) and
+          // claiming "0 seeders" for a torrent that still has DHT peers
+          // or private-tracker seeders is common. Let WebTorrent try it;
+          // if the swarm really is dead, we find out in seconds from the
+          // peer-watchdog, and meanwhile we haven't starved the fallback
+          // chain of options for popular titles where Torrentio is also
+          // flaking.
           const movieResults = (Array.isArray(results) ? results : [])
-            .filter((t) => t.id !== '0' && torrentMatchesTitle(t.name, title) && (parseInt(t.seeders) || 0) > 0)
+            .filter((t) => t.id !== '0' && torrentMatchesTitle(t.name, title))
             .sort((a, b) => (parseInt(b.seeders) || 0) - (parseInt(a.seeders) || 0))
             .slice(0, 8)
           for (const t of movieResults) {
@@ -862,18 +870,36 @@ async function torrentioLookup(kind, id, season, episode) {
     ? `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
     : ''
 
+  // Fetch one URL with a single retry on network-level failures. Torrentio
+  // + Cloudflare occasionally returns a transient reset or DNS miss on the
+  // first attempt and succeeds on the second; giving up after one try
+  // empties results for the whole lookup and manifests to the user as
+  // "popular show has no torrents." We swallow the retry cost because the
+  // per-URL 6s timeout still caps total lookup time.
   const fetchOne = async (url) => {
     const release = await torrentioAcquire()
     try {
-      const r = await fetchWithTimeout(url, {}, 6000)
-      if (!r.ok) {
-        console.warn(`[torrentio] ${r.status} ${url}`)
-        return []
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const r = await fetchWithTimeout(url, {}, 6000)
+          if (!r.ok) {
+            // 4xx/5xx from Torrentio itself — no point retrying, it'll say
+            // the same thing next time. Log and bail.
+            console.warn(`[torrentio] ${r.status} ${url}`)
+            return []
+          }
+          const j = await r.json().catch(() => ({}))
+          return j.streams || []
+        } catch (err) {
+          // Retry ONLY on first attempt; on the second, propagate.
+          if (attempt === 0) {
+            console.warn(`[torrentio] retry ${url}: ${err.message}`)
+            continue
+          }
+          console.warn(`[torrentio] fail ${url}: ${err.message}`)
+          return []
+        }
       }
-      const j = await r.json().catch(() => ({}))
-      return j.streams || []
-    } catch (err) {
-      console.warn(`[torrentio] fail ${url}: ${err.message}`)
       return []
     } finally {
       release()
@@ -910,15 +936,23 @@ async function torrentioLookup(kind, id, season, episode) {
 
   await new Promise((resolve) => {
     let resolved = false
-    const done = () => { if (!resolved) { resolved = true; resolve() } }
+    let poll = null
+    // Centralise cleanup so no exit path can leak the poll interval. Before
+    // this change, if settled.then() fired the early `done()` (all fetches
+    // resolved before MIN_RESULTS), the poll interval was left running
+    // forever — each lookup leaked one interval per invocation.
+    const done = () => {
+      if (resolved) return
+      resolved = true
+      if (poll) { clearInterval(poll); poll = null }
+      resolve()
+    }
     settled.then(done)
-    // Poll for early exit
-    const poll = setInterval(() => {
-      if (out.length >= MIN_RESULTS) { clearInterval(poll); done() }
+    poll = setInterval(() => {
+      if (out.length >= MIN_RESULTS) done()
     }, 150)
-    setTimeout(() => { if (out.length >= 1) { clearInterval(poll); done() } }, mediumMs)
-    setTimeout(() => { clearInterval(poll); done() }, hardMs)
-    setTimeout(() => { /* soft tick — let fast ones settle */ }, softMs)
+    setTimeout(() => { if (out.length >= 1) done() }, mediumMs)
+    setTimeout(done, hardMs)
   })
 
   console.log(`[torrentio] ${kind} ${id}${kind === 'series' ? `:${season}:${episode}` : ''} — ${rawCount} raw → ${out.length} deduped`)
@@ -987,7 +1021,16 @@ function parseTorrentioStream(st, s, e, tag) {
   const title = st.title || st.name || ''
   const firstLine = title.split('\n')[0] || ''
   const qm = title.match(/\b(2160p|1080p|720p|480p|4K|HDR)\b/i)
-  const seedsM = title.match(/👤\s*(\d+)/) || title.match(/[Ss]eeds?[:\s]+(\d+)/)
+  // Torrentio occasionally changes the per-stream stats format. Over the last
+  // year we've seen: "👤 123", "👤(123)", "👤: 123", "Seeds: 456", "S:789",
+  // and once (briefly) a bare number suffix. A strict regex here silently
+  // zeros out every result when the format drifts — which reproduces as
+  // "popular show has no seeders" even though Torrentio itself is working.
+  // Try a cascade of patterns before giving up.
+  const seedsM = title.match(/👤\s*[\(\[]?\s*(\d+)/)
+    || title.match(/[Ss]eeders?[:\s=]+\s*[\(\[]?\s*(\d+)/)
+    || title.match(/\bS[:\s=]+(\d+)\b/)
+    || title.match(/\b(\d+)\s*seeds?\b/i)
   const sizeM = title.match(/💾\s*([\d.]+\s*[KMGT]B)/i) || title.match(/\b([\d.]+\s*[KMGT]B)\b/i)
   const fileIdx = typeof st.fileIdx === 'number' ? st.fileIdx : null
 
@@ -1212,9 +1255,28 @@ app.get('/api/subtitles', async (req, res) => {
   } catch { res.json({ subtitles: [] }) }
 })
 
+// Hostnames we'll proxy subtitle requests to. Anything else is rejected.
+// Without this whitelist, /api/subtitles/proxy was an open HTTP proxy
+// reachable on localhost — an attacker with local-network access could
+// read arbitrary URLs through our server (SSRF). The current allowlist
+// covers every provider we actually consume from `/api/subtitles`; if we
+// add a new source, extend this set explicitly.
+const SUBTITLE_PROXY_HOSTS = new Set([
+  'opensubtitles-v3.strem.io',
+  'sub.strem.io',
+  'www.opensubtitles.com',
+  'rest.opensubtitles.org',
+  'dl.opensubtitles.org',
+])
+
 app.get('/api/subtitles/proxy', async (req, res) => {
   const { url, offset } = req.query
   if (!url || !url.startsWith('https://')) return res.status(400).json({ error: 'Invalid URL' })
+  let parsed
+  try { parsed = new URL(url) } catch { return res.status(400).json({ error: 'Invalid URL' }) }
+  if (!SUBTITLE_PROXY_HOSTS.has(parsed.host)) {
+    return res.status(403).json({ error: 'Host not allowed' })
+  }
   try {
     const r = await fetch(url, FETCH_OPTS)
     if (!r.ok) return res.status(502).json({ error: 'Fetch failed' })
@@ -1351,7 +1413,19 @@ app.post('/api/stream', (req, res) => {
       const result = getStreamFromTorrent(t)
       if (result) return send(200, result)
     }
-    t.once('ready', () => {
+    // Pair the ready/error listeners so firing one removes the other.
+    // Without this, retries on the same torrent (e.g. the picker tries
+    // alternative sources that resolve to the same infoHash, or the
+    // client retries after an abort) kept adding pairs until the
+    // EventEmitter hit its 10-listener threshold and WebTorrent printed
+    // `MaxListenersExceededWarning: 11 verified listeners added to
+    // [Torrent]`. Real leak — one listener pair per orphaned request.
+    const onReady = () => { t.removeListener('error', onError); readyHandler() }
+    const onError = (err) => { t.removeListener('ready', onReady); send(500, { error: String(err?.message || 'Torrent error') }) }
+    t.once('ready', onReady)
+    t.once('error', onError)
+    // Extracted so the removeListener dance stays readable.
+    const readyHandler = () => {
       console.log(`Torrent ready: ${t.name}, files: ${t.files.length}`)
       t.files.forEach((f, i) => console.log(`  [${i}] ${f.name} (${(f.length / 1024 / 1024).toFixed(1)} MB)`))
       const result = getStreamFromTorrent(t)
@@ -1380,10 +1454,7 @@ app.post('/api/stream', (req, res) => {
           send(400, { error: 'No playable video file found in this torrent' })
         }
       }
-    })
-    t.once('error', (err) => {
-      send(500, { error: String(err?.message || 'Torrent error') })
-    })
+    }
   }
 
   try {
@@ -2029,8 +2100,16 @@ async function initDlna() {
       dlnaPlayers.set(id, player)
     })
     dlnaCaster.update()
-    // Refresh device list every 60s to track renderers turning on/off
-    setInterval(() => { try { dlnaCaster.update() } catch {} }, 60_000)
+    // Refresh device list every 60s to track renderers turning on/off.
+    // Store the handle on the caster so the process-shutdown hook below
+    // can clear it — previously this interval was anonymous and kept the
+    // event loop alive after 'beforeExit' in any script that tried to
+    // import and use the server library.
+    dlnaCaster._refreshInterval = setInterval(
+      () => { try { dlnaCaster.update() } catch {} },
+      60_000,
+    )
+    dlnaCaster._refreshInterval.unref?.()
     dlnaStatus = 'ok'
     console.log('DLNA: discovery started')
   } catch (e) {

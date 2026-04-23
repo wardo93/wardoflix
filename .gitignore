@@ -20,6 +20,12 @@ cache/
 !.env.example
 .claude/
 
+# Ad-hoc debug scripts that sometimes get created during investigation.
+# If you write a real test, put it under test/ and git-add it explicitly.
+test-*.js
+debug-*.js
+scratch-*.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

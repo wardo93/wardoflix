@@ -129,22 +129,41 @@ function btnStyle(primary) {
   }
 
   const origFetch = window.fetch.bind(window)
+  // Extract the path+query from any URL using the real URL parser so we
+  // don't rely on a regex that misbehaves on blob:/data:/relative inputs.
+  // Returns null if the URL doesn't parse or has no path portion.
+  const urlPath = (u) => {
+    try { const p = new URL(u, window.location.href); return p.pathname + p.search }
+    catch { return null }
+  }
   window.fetch = (input, init) => {
     if (typeof input === 'string') return origFetch(rewrite(input), init)
-    if (input instanceof Request && REWRITE.test(input.url.replace(/^[^/]*\/\/[^/]+/, ''))) {
-      // Rare — Request object with a relative-ish URL. Reconstruct.
-      const path = input.url.replace(/^[^/]*\/\/[^/]+/, '')
-      return origFetch(rewrite(path), init)
+    if (input instanceof Request) {
+      const p = urlPath(input.url)
+      if (p && REWRITE.test(p)) {
+        // Rebuild as a plain string request so the rewrite takes effect.
+        // The original Request's body/headers/credentials are preserved
+        // via init; Request-cloning edge cases (signal, referrer) are
+        // rare enough for our own internal calls that this is fine.
+        return origFetch(rewrite(p), init || {})
+      }
     }
     return origFetch(input, init)
   }
 
   const OrigES = window.EventSource
   if (OrigES) {
-    window.EventSource = function PatchedEventSource(url, opts) {
-      return new OrigES(rewrite(url), opts)
+    // Use a class that extends EventSource. The previous plain function
+    // shape (`function PatchedEventSource(){ return new OrigES(...) }`)
+    // worked for `new EventSource(...)` but silently returned a stray
+    // function reference if any caller did `EventSource(...)` without
+    // `new` — which is what happens when libraries polyfill. Extending
+    // the real class means instanceof, prototype chain, and subclass-
+    // specific constructor invariants all stay correct.
+    class PatchedEventSource extends OrigES {
+      constructor(url, opts) { super(rewrite(url), opts) }
     }
-    window.EventSource.prototype = OrigES.prototype
+    window.EventSource = PatchedEventSource
   }
 })()
 

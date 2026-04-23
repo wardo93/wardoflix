@@ -5,6 +5,7 @@ import { app, BrowserWindow, shell, Menu, ipcMain } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { fork } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -49,6 +50,20 @@ rotateLogIfNeeded()
 
 let logStream = null
 try { logStream = fs.createWriteStream(LOG_PATH, { flags: 'a' }) } catch {}
+// If userData is read-only (permission issue, disk full, antivirus lock)
+// fall back to the OS temp dir so packaged builds — which have no
+// attached console — still produce some diagnostic output. Without this
+// the app is impossible to debug post-mortem when anything's wrong.
+if (!logStream) {
+  try {
+    const fallback = path.join(os.tmpdir(), 'wardoflix.log')
+    logStream = fs.createWriteStream(fallback, { flags: 'a' })
+    try { console.warn('primary log unavailable; using fallback', fallback) } catch {}
+  } catch {
+    // If even the fallback fails we accept silent operation rather than
+    // crashing on startup.
+  }
+}
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}`
@@ -218,8 +233,25 @@ function loadWindowState() {
   try {
     const raw = fs.readFileSync(WINDOW_STATE_PATH, 'utf8')
     const s = JSON.parse(raw)
-    // Validate numbers — a corrupted file shouldn't break the launch.
-    if (typeof s.width === 'number' && typeof s.height === 'number') return s
+    // Validate EVERY field. A corrupted file that has `"x": "foo"` used
+    // to slip through because we only checked width/height — the string
+    // then coerced to NaN in setBounds() and the window launched somewhere
+    // undefined (empirically, sometimes offscreen, sometimes 0x0). This
+    // way corrupted = fall back to defaults, which is always recoverable.
+    const okNum = (v) => typeof v === 'number' && Number.isFinite(v)
+    if (!okNum(s?.width) || !okNum(s?.height)) return null
+    // Minimum sensible dimensions. A previous bug where we wrote a
+    // bounds-of-zero during a rapid quit meant the window could resurrect
+    // as 0x0 on next launch and be impossible to find.
+    if (s.width < 300 || s.height < 200) return null
+    return {
+      x: okNum(s.x) ? s.x : undefined,
+      y: okNum(s.y) ? s.y : undefined,
+      width: s.width,
+      height: s.height,
+      isMaximized: s.isMaximized === true,
+      isFullScreen: s.isFullScreen === true,
+    }
   } catch {}
   return null
 }
@@ -477,7 +509,7 @@ function startUpdaterPolling() {
     return
   }
   const kick = () => {
-    autoUpdater.checkForUpdates().catch((e) => log('[updater] initial check failed:', e?.message || e))
+    autoUpdater.checkForUpdates().catch((e) => log('[updater] initial check failed:', e?.stack || e?.message || e))
   }
   // Delay the first check so the renderer has time to mount and subscribe.
   setTimeout(kick, 8_000)
@@ -523,11 +555,42 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+let quitInProgress = false
+app.on('before-quit', (e) => {
   // Mark intentional shutdown so the server's 'exit' handler doesn't
   // immediately re-fork it mid-quit.
   shuttingDown = true
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null }
-  try { serverProc?.kill() } catch {}
-  try { logStream?.end() } catch {}
+  if (stableTimer) { clearTimeout(stableTimer); stableTimer = null }
+  // Fast path: no server or second call — let Electron quit immediately.
+  if (!serverProc || quitInProgress) {
+    try { logStream?.end() } catch {}
+    return
+  }
+  quitInProgress = true
+  // Give the server up to 2s to flush cache writes, release torrent
+  // handles, and close its ports. Without this, Electron's process
+  // tree could tear down while the server was mid-write, leaving
+  // half-written cache files on disk and (on Windows) holding port
+  // 3000 in TIME_WAIT long enough that the next launch's fork()
+  // occasionally failed with EADDRINUSE. We prevent default ONCE and
+  // re-call app.quit() from the exit callback so the quit flow
+  // proceeds naturally.
+  e.preventDefault()
+  const proc = serverProc
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    try { logStream?.end() } catch {}
+    setImmediate(() => app.quit())
+  }
+  proc.once('exit', finish)
+  try { proc.kill() } catch { finish() }
+  setTimeout(() => {
+    if (!done) {
+      try { proc.kill('SIGKILL') } catch {}
+      finish()
+    }
+  }, 2000).unref?.()
 })

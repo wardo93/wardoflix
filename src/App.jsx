@@ -3017,7 +3017,18 @@ function PlayerControls({
   // Keyboard shortcuts — Stremio/YouTube-style
   useEffect(() => {
     const handler = (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+      // Full in-field guard. Previously this only looked at INPUT/TEXTAREA
+      // which missed: contentEditable fields, native SELECT dropdowns, and
+      // form controls inside the detail-modal dialog. Triggering play/pause
+      // while the user is typing in the Stream tab's URL box or picking a
+      // genre dropdown was confusing; this matches the guard the other
+      // (top-level) shortcut handler already uses.
+      const t = e.target
+      if (t) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+        if (t.isContentEditable) return
+      }
       const p = playerRef.current
       if (!p || p.isDisposed()) return
       // Number keys 0-9: jump to N*10% of the video (YouTube/Stremio parity)
@@ -4612,10 +4623,18 @@ function App() {
     setSource(null)
     setStreamBaseUrl(newUrl)
     setTimeout(() => {
+      // If the user clicked Clear / Back / started a different stream
+      // during the 50ms dispose-settle wait, streamAliveRef flips to
+      // false and we must NOT rearm source — otherwise we ghost-launch
+      // the audio track of a stream the user already dismissed, which
+      // manifests as "clicked back, then the player re-appeared with
+      // the old episode's Spanish dub." Check before doing anything.
+      if (!streamAliveRef.current) return
       setSource(newUrl)
       setSourceType('url')
       // Seek back to saved position once player is ready
       const waitForPlayer = setInterval(() => {
+        if (!streamAliveRef.current) { clearInterval(waitForPlayer); return }
         const p = playerRef.current
         if (p && !p.isDisposed()) {
           p.ready(() => {
