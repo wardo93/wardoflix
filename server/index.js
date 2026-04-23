@@ -182,6 +182,28 @@ function pruneCache() {
 // ── WebTorrent ──────────────────────────────────────────────────
 const client = new WebTorrent()
 const wtServer = client.createServer({ pathname: '/stream' })
+
+// Encode a torrent-relative file path for WebTorrent's internal HTTP
+// server. Crucially, we must use encodeURI per segment, NOT
+// encodeURIComponent, because WebTorrent's server decodes with
+// decodeURI (lib/server.js line ~214). The two are asymmetric:
+//   encodeURIComponent("+") → "%2B"
+//   decodeURI("%2B")         → "%2B"  (unchanged! "+" is reserved)
+// So a filename with "+" (or any of @, ;, $, ,, & — anything
+// decodeURI treats as reserved) would serialize to %XX, come back
+// still %XX after decodeURI, and fail the `file.path === filePath`
+// lookup with a 404. Happened on "The Boys ... AC3 5.1-Ingles+Subs".
+// encodeURI encodes only the unreserved-but-unsafe chars (space,
+// brackets, Unicode) so the round-trip matches file.path exactly.
+// Normalise backslashes to forward slashes first because file.path
+// sometimes uses the OS separator on Windows.
+function encodeWtPath(filePath) {
+  return String(filePath || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(seg => encodeURI(seg))
+    .join('/')
+}
 try {
   wtServer.listen(STREAM_PORT, () => console.log(`Stream server: http://localhost:${STREAM_PORT}`))
 } catch (err) {
@@ -1528,8 +1550,43 @@ function parseInfoHashFromError(errMsg) {
   return m ? m[1].toLowerCase() : null
 }
 
-function getStreamFromTorrent(t) {
-  const videoFile = pickBestVideoFile(t.files)
+// Given an episode pack, pick the file that matches the user's requested
+// season/episode. Falls back to null if we can't resolve unambiguously —
+// the caller then defaults to pickBestVideoFile's largest-video heuristic,
+// which is correct for single-title packs but wrong for season packs.
+function pickEpisodeFile(files, season, episode) {
+  if (!files || !Number.isFinite(season) || !Number.isFinite(episode)) return null
+  const s = Number(season), e = Number(episode)
+  const candidates = files.filter(f => (f.length || 0) > 10 * 1024 * 1024 && (hasVideoExt(f.name) || hasVideoExt(f.path)))
+  // Accept any of the common episode-tag formats in the filename:
+  //   S01E01 / s1e1 / 1x01 / 01x01 / season1ep1
+  const match = candidates.find(f => {
+    const name = (f.name || '').toLowerCase()
+    if (new RegExp(`\\bs0*${s}[ _.-]?e0*${e}\\b`, 'i').test(name)) return true
+    if (new RegExp(`\\b0*${s}\\s*x\\s*0*${e}\\b`, 'i').test(name)) return true
+    if (new RegExp(`season\\s*0*${s}.{0,3}ep(?:isode)?\\s*0*${e}\\b`, 'i').test(name)) return true
+    return false
+  })
+  return match || null
+}
+
+function getStreamFromTorrent(t, opts = {}) {
+  // Priority chain for picking the right file out of the torrent:
+  //   1. explicit fileIdx from Torrentio (most reliable — Torrentio
+  //      already solved the pack-matching problem for us)
+  //   2. season/episode pattern match in filenames (handles random
+  //      multi-episode archives that didn't come from Torrentio)
+  //   3. pickBestVideoFile — largest video (fallback for movies and
+  //      single-episode torrents)
+  let videoFile = null
+  if (typeof opts.fileIdx === 'number' && opts.fileIdx >= 0 && opts.fileIdx < t.files.length) {
+    const candidate = t.files[opts.fileIdx]
+    if (candidate && (candidate.length || 0) > 10 * 1024 * 1024) videoFile = candidate
+  }
+  if (!videoFile && Number.isFinite(opts.season) && Number.isFinite(opts.episode)) {
+    videoFile = pickEpisodeFile(t.files, opts.season, opts.episode)
+  }
+  if (!videoFile) videoFile = pickBestVideoFile(t.files)
   if (!videoFile) return null
   touchTorrent(t.infoHash)
   const fileName = (videoFile.name || '').toLowerCase()
@@ -1544,7 +1601,7 @@ function getStreamFromTorrent(t) {
   //     decode — the Supernatural case we saw).
   //   - Everything else takes the fast path: direct WebTorrent HTTP,
   //     no ffmpeg hop, zero start-up latency.
-  const encodedPath = videoFile.path.split(/[/\\]/).map(encodeURIComponent).join('/')
+  const encodedPath = encodeWtPath(videoFile.path)
   const routeToRemux = isMkv || transcodeHint
   const remuxQuery = transcodeHint ? '?transcode=1' : ''
   const url = routeToRemux
@@ -1561,9 +1618,14 @@ function getStreamFromTorrent(t) {
 
 // ── Stream endpoint ─────────────────────────────────────────────
 app.post('/api/stream', (req, res) => {
-  let { magnet } = req.body || {}
+  let { magnet, fileIdx, season, episode } = req.body || {}
   if (!magnet || !String(magnet).trim().toLowerCase().startsWith('magnet:')) {
     return res.status(400).json({ error: 'Invalid magnet link' })
+  }
+  const pickOpts = {
+    fileIdx: Number.isInteger(fileIdx) ? fileIdx : undefined,
+    season: Number.isInteger(season) ? season : (Number.isFinite(parseInt(season)) ? parseInt(season) : undefined),
+    episode: Number.isInteger(episode) ? episode : (Number.isFinite(parseInt(episode)) ? parseInt(episode) : undefined),
   }
 
   magnet = addTrackers(magnet.trim())
@@ -1592,7 +1654,7 @@ app.post('/api/stream', (req, res) => {
 
   const waitForTorrent = (t) => {
     if (t.ready && t.files?.length) {
-      const result = getStreamFromTorrent(t)
+      const result = getStreamFromTorrent(t, pickOpts)
       if (result) return send(200, result)
     }
     // Pair the ready/error listeners so firing one removes the other.
@@ -1610,7 +1672,7 @@ app.post('/api/stream', (req, res) => {
     const readyHandler = () => {
       console.log(`Torrent ready: ${t.name}, files: ${t.files.length}`)
       t.files.forEach((f, i) => console.log(`  [${i}] ${f.name} (${(f.length / 1024 / 1024).toFixed(1)} MB)`))
-      const result = getStreamFromTorrent(t)
+      const result = getStreamFromTorrent(t, pickOpts)
       if (result) {
         const videoFile = pickBestVideoFile(t.files)
         if (videoFile) videoFile.select()
@@ -1627,7 +1689,7 @@ app.post('/api/stream', (req, res) => {
           const transcodeHint = needsTranscodeFromName(largest)
           const routeToRemux = isMkv || transcodeHint
           const remuxQuery = transcodeHint ? '?transcode=1' : ''
-          const encoded = largest.path.split(/[/\\]/).map(encodeURIComponent).join('/')
+          const encoded = encodeWtPath(largest.path)
           const url = routeToRemux
             ? `/remux/${t.infoHash}/${encoded}${remuxQuery}`
             : `${streamBaseUrl}${wtServer.pathname}/${t.infoHash}/${encoded}`
@@ -1644,8 +1706,15 @@ app.post('/api/stream', (req, res) => {
     const existing = findExisting(infoHash)
     if (existing) {
       if (existing.files?.length) {
-        const result = getStreamFromTorrent(existing)
-        if (result) return send(200, result)
+        const result = getStreamFromTorrent(existing, pickOpts)
+        if (result) {
+          // Select the picked file so WebTorrent prioritises its pieces
+          // (otherwise the previous session's selection may still be in
+          // effect and the new episode trickles in slowly).
+          const picked = existing.files.find(f => f.name === result.name)
+          if (picked) { picked.select(); existing.files.forEach(f => { if (f !== picked) f.deselect() }) }
+          return send(200, result)
+        }
       }
       // Torrent exists but still loading — wait for it
       return waitForTorrent(existing)
@@ -2072,7 +2141,7 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // to WT for the byte offset corresponding to `-ss seekSec`, WT prioritizes
   // those pieces, and ffmpeg streams forward from there. This is what
   // unblocks scrubbing in the player.
-  const encodedPath = videoFile.path.split(/[/\\]/).map(encodeURIComponent).join('/')
+  const encodedPath = encodeWtPath(videoFile.path)
   const inputUrl = `http://127.0.0.1:${STREAM_PORT}${wtServer.pathname}/${hash}/${encodedPath}`
 
   // Copy-vs-transcode decision.

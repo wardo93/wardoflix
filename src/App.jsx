@@ -4472,7 +4472,18 @@ function App() {
           const res = await fetch('/api/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ magnet: candidate.magnet }),
+            // Pass fileIdx when Torrentio told us which file in a
+            // multi-episode pack matches the episode the user clicked.
+            // Without this, pickBestVideoFile just picks the largest
+            // video and we play "S2E7" when the user asked for "S1E1" —
+            // reproducing every time a pack covers multiple episodes.
+            body: JSON.stringify({
+              magnet: candidate.magnet,
+              fileIdx: typeof candidate.fileIdx === 'number' ? candidate.fileIdx : undefined,
+              season: playingMetadata?.season,
+              episode: playingMetadata?.episode,
+              titleHint: playingMetadata?.title,
+            }),
             signal: streamCtl.signal,
           })
           // If the user started a different stream (or handleClear ran)
