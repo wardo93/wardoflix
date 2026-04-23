@@ -593,16 +593,36 @@ app.get('/api/torrents', async (req, res) => {
       if (year) queries.push(`${title} ${String(year).slice(0, 4)}`)
       queries.push(String(title).trim())
 
-      let data = {}
-      for (const base of YTS_MIRRORS) {
-        for (const q of queries) {
-          try {
-            const r = await fetchWithTimeout(`${base}/list_movies.json?query_term=${encodeURIComponent(q)}&limit=10`, {}, 6000)
-            data = await r.json().catch(() => ({}))
-            if (data.status === 'ok' && data.data?.movies?.length) break
-          } catch (e) { logThrottled('warn', `yts:${base}:${e.message}`, `YTS ${base}: ${e.message}`) }
+      // Cache YTS response by IMDb-or-title+year. YTS movie metadata is
+      // extremely stable (a release from last year hasn't changed today),
+      // so a 1h TTL gives us a huge hit-rate while still picking up new
+      // releases on-schedule. Without this, a 3-user household burned
+      // through YTS's soft rate limit within an afternoon because every
+      // detail-modal open re-fetched the full mirror list.
+      const ytsCacheKey = imdb || `${title}:${year || ''}`
+      let data = ytsCache.get(ytsCacheKey) || {}
+
+      if (!(data.status === 'ok' && data.data?.movies?.length)) {
+        for (const base of YTS_MIRRORS) {
+          if (isHostCooling(base)) { console.warn(`[yts] skip cooling ${base}`); continue }
+          for (const q of queries) {
+            try {
+              const r = await fetchWithTimeout(`${base}/list_movies.json?query_term=${encodeURIComponent(q)}&limit=10`, {}, 6000)
+              if (r.status === 429 || r.status === 503) {
+                try { markHostRateLimited(new URL(base).host) } catch {}
+                break
+              }
+              data = await r.json().catch(() => ({}))
+              if (data.status === 'ok' && data.data?.movies?.length) break
+            } catch (e) { logThrottled('warn', `yts:${base}:${e.message}`, `YTS ${base}: ${e.message}`) }
+          }
+          if (data.status === 'ok' && data.data?.movies?.length) break
         }
-        if (data.status === 'ok' && data.data?.movies?.length) break
+        if (data.status === 'ok' && data.data?.movies?.length) {
+          ytsCache.set(ytsCacheKey, data)
+        }
+      } else {
+        console.log(`[yts] cache hit ${ytsCacheKey}`)
       }
 
       if (data.status === 'ok' && data.data?.movies?.length) {
@@ -784,6 +804,110 @@ app.get('/api/torrents', async (req, res) => {
   }
 })
 
+// ── Disk-backed TTL cache for external API responses ─────────────
+// Every Torrentio / APIBAY / YTS lookup used to hit the network. With
+// three users sharing a home IP, every detail-modal open fired ~12
+// Torrentio requests across mirrors-and-retries, and the household
+// quickly ate the public service's soft rate limit — symptom was
+// "suddenly no sources for anything." Adding a cache cuts outbound
+// traffic ~95% for repeat access (which is most of it — you open the
+// same shows you've seen). Stored on disk under CACHE_DIR/api-cache
+// so restarts don't lose the heat-up.
+//
+// Each key lives in RAM in a bounded Map (LRU-ish via delete-then-set).
+// The on-disk copy is written lazily after a successful miss and on a
+// 30-second debounced flush, so hot keys don't thrash the FS.
+class ApiCache {
+  constructor({ name, ttlMs, maxEntries, dir }) {
+    this.name = name
+    this.ttlMs = ttlMs
+    this.maxEntries = maxEntries
+    this.mem = new Map()
+    this.dir = path.join(dir, 'api-cache', name)
+    this.flushTimer = null
+    this.dirty = new Set()
+    try { fs.mkdirSync(this.dir, { recursive: true }) } catch {}
+    // Hydrate from disk so a restart doesn't force a cold fetch storm.
+    try {
+      const files = fs.readdirSync(this.dir)
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue
+        try {
+          const raw = fs.readFileSync(path.join(this.dir, f), 'utf8')
+          const { key, value, t } = JSON.parse(raw)
+          if (!key || Date.now() - t > this.ttlMs) continue
+          this.mem.set(key, { value, t })
+        } catch {}
+      }
+    } catch {}
+  }
+  _keyToFilename(key) {
+    // Replace path-unsafe chars with underscores. Keys are short lookup
+    // identifiers (kind:id:season:episode), no risk of collision at our
+    // cardinality.
+    return key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 180) + '.json'
+  }
+  get(key) {
+    const entry = this.mem.get(key)
+    if (!entry) return null
+    if (Date.now() - entry.t > this.ttlMs) {
+      this.mem.delete(key)
+      return null
+    }
+    // Refresh recency (move to end) so the LRU eviction below keeps the
+    // hottest keys.
+    this.mem.delete(key)
+    this.mem.set(key, entry)
+    return entry.value
+  }
+  set(key, value) {
+    this.mem.delete(key)
+    this.mem.set(key, { value, t: Date.now() })
+    while (this.mem.size > this.maxEntries) {
+      const oldest = this.mem.keys().next().value
+      if (!oldest) break
+      this.mem.delete(oldest)
+    }
+    this.dirty.add(key)
+    if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => this._flush(), 30_000)
+      this.flushTimer.unref?.()
+    }
+  }
+  _flush() {
+    this.flushTimer = null
+    for (const key of this.dirty) {
+      const entry = this.mem.get(key)
+      if (!entry) continue
+      try {
+        fs.writeFileSync(
+          path.join(this.dir, this._keyToFilename(key)),
+          JSON.stringify({ key, value: entry.value, t: entry.t }),
+        )
+      } catch {}
+    }
+    this.dirty.clear()
+  }
+}
+
+const torrentioCache = new ApiCache({ name: 'torrentio', ttlMs: 30 * 60 * 1000, maxEntries: 500, dir: CACHE_DIR })
+const apibayCache   = new ApiCache({ name: 'apibay',   ttlMs: 30 * 60 * 1000, maxEntries: 500, dir: CACHE_DIR })
+const ytsCache      = new ApiCache({ name: 'yts',      ttlMs: 60 * 60 * 1000, maxEntries: 500, dir: CACHE_DIR })
+
+// Per-host rate-limit back-off. If we see a 429 or a burst of 5xx from a
+// host, pause fetching against that host for a while. Prevents us from
+// hammering a service that's already pushing back.
+const HOST_BACKOFF = new Map()
+function hostBackoffUntil(host) { return HOST_BACKOFF.get(host) || 0 }
+function markHostRateLimited(host, ms = 10 * 60 * 1000) {
+  const until = Date.now() + ms
+  HOST_BACKOFF.set(host, Math.max(until, hostBackoffUntil(host)))
+  console.warn(`[backoff] ${host} cooling for ${Math.round(ms / 1000)}s`)
+}
+function isHostCooling(url) {
+  try { return Date.now() < hostBackoffUntil(new URL(url).host) } catch { return false }
+}
+
 // On-demand per-episode Torrentio lookup — this is the core of our TV
 // flow, matching how Stremio actually works. Called when the user clicks
 // an episode. Torrentio aggregates ~20 trackers (YTS, EZTV, RARBG mirrors,
@@ -816,13 +940,17 @@ const TORRENTIO_HOSTS_BASE = [
 
 // Build every URL variant we want to try. For a single lookup we fire all
 // of these simultaneously and merge results.
+//
+// Used to fan out to 6 URLs per lookup (2 hosts × 3 provider combos), which
+// with retries was up to 12 requests per episode click — enough that three
+// users on a shared IP saturated Torrentio's soft rate limit within an hour
+// of casual browsing. We now hit each mirror once with the FULL provider
+// list. If the FULL list is rejected (Cloudflare picks on long URLs), the
+// individual URL will fail and we still have the other mirror. The DEFAULT
+// provider set is dropped: anything it returns, FULL also returns.
 function buildTorrentioUrls(kind, id, season, episode) {
   const idPath = kind === 'series' ? `${id}:${season}:${episode}` : id
-  const paths = [
-    '', // bare — Torrentio's built-in defaults
-    `/providers=${TORRENTIO_DEFAULT}`,
-    `/providers=${TORRENTIO_FULL}`,
-  ]
+  const paths = [`/providers=${TORRENTIO_FULL}`]
   const urls = []
   for (const host of TORRENTIO_HOSTS_BASE) {
     for (const p of paths) {
@@ -865,6 +993,13 @@ function torrentioAcquire() {
 }
 
 async function torrentioLookup(kind, id, season, episode) {
+  const cacheKey = kind === 'series' ? `${kind}:${id}:${season}:${episode}` : `${kind}:${id}`
+  const cached = torrentioCache.get(cacheKey)
+  if (cached) {
+    console.log(`[torrentio] cache hit ${cacheKey} (${cached.length} streams)`)
+    return cached
+  }
+
   const urls = buildTorrentioUrls(kind, id, season, episode)
   const tag = kind === 'series'
     ? `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
@@ -877,14 +1012,25 @@ async function torrentioLookup(kind, id, season, episode) {
   // "popular show has no torrents." We swallow the retry cost because the
   // per-URL 6s timeout still caps total lookup time.
   const fetchOne = async (url) => {
+    // Skip hosts that are currently in rate-limit cooldown — saves us
+    // from making a doomed request that'll come back 429 and waste
+    // a slot in the concurrency pool.
+    if (isHostCooling(url)) {
+      console.warn(`[torrentio] skip cooling ${url}`)
+      return []
+    }
     const release = await torrentioAcquire()
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const r = await fetchWithTimeout(url, {}, 6000)
           if (!r.ok) {
-            // 4xx/5xx from Torrentio itself — no point retrying, it'll say
-            // the same thing next time. Log and bail.
+            // 429 or 503 from a Cloudflare-fronted service is the classic
+            // rate-limit signature. Cool this host off for 10 min so the
+            // rest of this user's session doesn't keep hammering.
+            if (r.status === 429 || r.status === 503) {
+              try { markHostRateLimited(new URL(url).host) } catch {}
+            }
             console.warn(`[torrentio] ${r.status} ${url}`)
             return []
           }
@@ -957,6 +1103,11 @@ async function torrentioLookup(kind, id, season, episode) {
 
   console.log(`[torrentio] ${kind} ${id}${kind === 'series' ? `:${season}:${episode}` : ''} — ${rawCount} raw → ${out.length} deduped`)
   out.sort((a, b) => (b.seeds || 0) - (a.seeds || 0))
+  // Cache ONLY if we got results. Caching an empty response would pin a
+  // transient failure for the full TTL — if Torrentio briefly 502'd and
+  // we stored [], every user would get 30 minutes of "no sources" for a
+  // show that's actually available. Missing-response path stays cold.
+  if (out.length > 0) torrentioCache.set(cacheKey, out)
   return out
 }
 
@@ -964,6 +1115,12 @@ async function torrentioLookup(kind, id, season, episode) {
 // Returns torrents matching title + season/episode. Strict episode match
 // to avoid dumping a whole-season pack in place of a single episode.
 async function apibayLookupEpisode(titleOrId, season, episode) {
+  const cacheKey = `ep:${titleOrId}:${season}:${episode}`
+  const cached = apibayCache.get(cacheKey)
+  if (cached) {
+    console.log(`[apibay] cache hit ${cacheKey} (${cached.length} streams)`)
+    return cached
+  }
   const tag = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
   const altTag = `${season}x${String(episode).padStart(2, '0')}`
   const queries = [
@@ -974,8 +1131,15 @@ async function apibayLookupEpisode(titleOrId, season, episode) {
   const out = []
   const seen = new Set()
   await Promise.allSettled(queries.map(async (q) => {
+    const url = `https://apibay.org/q.php?q=${encodeURIComponent(q)}`
+    if (isHostCooling(url)) { console.warn(`[apibay] skip cooling`); return }
     try {
-      const r = await fetchWithTimeout(`https://apibay.org/q.php?q=${encodeURIComponent(q)}`, {}, 7000)
+      const r = await fetchWithTimeout(url, {}, 7000)
+      if (r.status === 429 || r.status === 503) {
+        try { markHostRateLimited('apibay.org') } catch {}
+        console.warn(`[apibay] ${r.status} — cooling`)
+        return
+      }
       const results = await r.json().catch(() => [])
       const matching = (Array.isArray(results) ? results : [])
         .filter((t) => t.id !== '0' && torrentMatchesTitle(t.name, titleOrId))
@@ -1001,6 +1165,7 @@ async function apibayLookupEpisode(titleOrId, season, episode) {
       console.warn(`[apibay] "${q}": ${err.message}`)
     }
   }))
+  if (out.length > 0) apibayCache.set(cacheKey, out)
   return out
 }
 
