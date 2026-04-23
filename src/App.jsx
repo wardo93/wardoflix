@@ -2781,7 +2781,19 @@ function PlayerControls({
   streamProgress, castState, onCast, onStopCast, onBack,
   audioTracks, activeAudioIdx, onAudioChange, knownDuration,
   dlnaDevices, dlnaActive, onDlnaCast, onDlnaStop, onDlnaRefresh,
+  onSeek,
 }) {
+  // Route every seek through the parent's `onSeek` handler instead of
+  // calling player.currentTime(target) directly. The parent knows
+  // whether the current source is a /remux stream (Accept-Ranges: none)
+  // and will either run a native seek (in-buffer, fast) or a URL
+  // reload with ?t=<target> (out-of-buffer — respawns ffmpeg at the
+  // new offset). Calling currentTime() directly on an out-of-buffer
+  // /remux target makes Chromium issue a new GET from byte 0 to read
+  // forward until it hits the target, which the user perceives as
+  // "the movie restarted from the start." That's the bug this
+  // indirection fixes.
+  const doSeek = (t) => { if (typeof onSeek === 'function') onSeek(t); else { try { playerRef.current?.currentTime(t) } catch {} } }
   const [castPanelOpen, setCastPanelOpen] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [waiting, setWaiting] = useState(false)
@@ -2923,7 +2935,7 @@ function PlayerControls({
     const rect = bar.getBoundingClientRect()
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     const d = getSafeDuration()
-    if (d > 0) p.currentTime(pct * d)
+    if (d > 0) doSeek(pct * d)
     showControls()
   }, [playerRef, getSafeDuration, showControls])
 
@@ -2943,7 +2955,7 @@ function PlayerControls({
       seekingRef.current = false
       const rect = bar.getBoundingClientRect()
       const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
-      if (p && !p.isDisposed() && d > 0) p.currentTime(pct * d)
+      if (p && !p.isDisposed() && d > 0) doSeek(pct * d)
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
@@ -2999,7 +3011,7 @@ function PlayerControls({
     const cur = p.currentTime() || 0
     const d = getSafeDuration()
     const target = Math.max(0, d > 0 ? Math.min(d, cur + sec) : cur + sec)
-    p.currentTime(target)
+    doSeek(target)
     showControls()
   }, [playerRef, getSafeDuration, showControls])
 
@@ -3037,7 +3049,7 @@ function PlayerControls({
         const d = getSafeDuration()
         if (d > 0) {
           e.preventDefault()
-          p.currentTime(d * (n / 10))
+          doSeek(d * (n / 10))
           showControls()
         }
         return
@@ -3771,6 +3783,13 @@ function App() {
   // torn-down player and plays from the start. Root cause of "±10s
   // restarts the whole show" in 1.4.9.
   const seekReloadPendingRef = useRef(false)
+  // How many seconds into the *original* movie the current /remux
+  // stream represents. Set every time seekRemuxAware performs a
+  // URL-based reload with ?t=<sec>. Used so the progress UI can show
+  // real-movie time rather than stream-local time; not currently
+  // wired through to PlayerControls, but the ref is kept so the
+  // reload path has somewhere to record the offset for future use.
+  const remuxTimeOffsetRef = useRef(0)
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
 
   useEffect(() => {
@@ -3919,65 +3938,12 @@ function App() {
       } catch {}
     })
 
-    // ── /remux seek-reload: scrub past the buffered edge via ?t= ─
-    // Transcoded /remux streams advertise Accept-Ranges: none (see the
-    // server for why — byte-ranges on a transcode pipe produce spliced
-    // garbage). That means native byte-range scrubbing is unavailable.
-    // To keep the seek bar useful we intercept user-initiated seeks:
-    // if the target is outside the buffered region AND we're on a
-    // /remux URL, tear down the current player, rebuild the URL with
-    // ?t=<target> appended, and let ffmpeg re-spawn at the new offset.
-    let pendingSeekReload = null
-    player.on('seeking', () => {
-      try {
-        // Capture target + src *immediately* as locals. By the time the
-        // debounced callback fires the player can have been torn down
-        // by the decode-error ladder (native seek → Accept-Ranges:none
-        // → MEDIA_ERR_DECODE → error handler kicks in) which resets
-        // currentTime()/currentSrc() to the new empty state. Using
-        // locals instead of calling player.currentTime() inside the
-        // setTimeout preserves the user's intent even if the player
-        // churned underneath us.
-        const target = player.currentTime()
-        const src = player.currentSrc() || ''
-        if (!src.includes('/remux/')) return
-        const buf = player.buffered()
-        let inBuffer = false
-        for (let i = 0; i < buf.length; i++) {
-          if (target >= buf.start(i) - 1 && target <= buf.end(i) + 1) { inBuffer = true; break }
-        }
-        if (inBuffer) return
-        // Mark a seek-reload as imminent so the decode-error handler
-        // doesn't run its own escalation in the meantime — otherwise
-        // the error handler wipes ?t= from the URL and the show
-        // restarts from zero. Released by the reload itself (below)
-        // or a 2-second safety timer in case something bails.
-        seekReloadPendingRef.current = true
-        if (pendingSeekReload) clearTimeout(pendingSeekReload)
-        pendingSeekReload = setTimeout(() => {
-          pendingSeekReload = null
-          // Short debounce (120ms) so rapid ±10s button mashing coalesces
-          // but we still beat the decode-error ladder. 350ms was too
-          // generous — users reported ±10s restarting the show because
-          // the error handler fired first.
-          const base = src.split('?')[0]
-          const qs = new URLSearchParams(src.split('?')[1] || '')
-          qs.delete('t'); qs.delete('fresh')
-          qs.set('t', String(Math.max(0, Math.floor(target))))
-          const reloaded = `${base}?${qs.toString()}`
-          setSource(reloaded)
-          setStreamBaseUrl(base)
-          // Clear the flag once the source switch has actually landed.
-          // A setTimeout 0 means it clears after React has committed the
-          // new source state; we also have the 2s safety below.
-          setTimeout(() => { seekReloadPendingRef.current = false }, 0)
-        }, 120)
-        // Safety: if for any reason the reload above doesn't happen
-        // (setSource throws, component unmounts, etc.), don't leave the
-        // error handler permanently muted.
-        setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
-      } catch {}
-    })
+    // (previous `seeking` event interceptor removed — it ran AFTER the
+    // native browser had already started a seek which, under our
+    // Accept-Ranges:none /remux contract, caused Chromium to issue a
+    // fresh GET from byte 0 and play forward from the start. Seek
+    // handling now lives upstream in seekRemuxAware (see App), which
+    // is invoked by PlayerControls BEFORE the native seek fires.)
 
     // ── Autoplay next episode when current one finishes ─────────
     player.on('ended', () => {
@@ -4675,6 +4641,72 @@ function App() {
   // (registered once per source) can trigger the latest version.
   useEffect(() => { handleStreamRef.current = handleStream })
 
+  // Seek that's aware of the /remux "Accept-Ranges: none" contract.
+  //
+  // Previously we let the native <video>.currentTime() setter handle
+  // seeks, and bolted a `seeking` event listener on top to intercept
+  // out-of-buffer targets and reload the URL with ?t=<target>. That
+  // lost races three different ways:
+  //   1. currentTime() inside the seeking handler could return 0 if
+  //      the decode-error ladder tore down the player between set
+  //      and read.
+  //   2. The 120ms debounce still occasionally lost to the error
+  //      handler's synchronous escalation.
+  //   3. The server's /remux produces a stream whose internal time
+  //      starts at 0 regardless of `-ss`, so even when the seek-
+  //      reload landed correctly, the player's UI showed 0:00
+  //      and felt like a restart.
+  //
+  // Fix: every seek trigger in the PlayerControls (±10s, seekbar
+  // click, seekbar drag release, number-key shortcut) calls this
+  // function instead of `player.currentTime(target)`. If we're on a
+  // /remux URL and the target is outside the buffered region, we
+  // skip the native seek entirely — just rebuild the URL with
+  // ?t=<target> and swap the source. The new player comes up at
+  // time 0 in its own coordinates, but ffmpeg's output represents
+  // the video starting at `target`, so what the user sees on screen
+  // is the correct content from their chosen point.
+  const seekRemuxAware = useCallback((target) => {
+    const p = playerRef.current
+    if (!p || p.isDisposed()) return
+    const dur = (() => { try { return p.duration() } catch { return 0 } })()
+    const clamped = Math.max(0, dur > 0 ? Math.min(dur - 1, target) : target)
+    const currentSrc = source || ''
+    // Non-remux URLs (direct /stream, magnet-to-HTTP, arbitrary user
+    // URLs) handle byte ranges natively. Delegate to the player.
+    if (!currentSrc.includes('/remux/')) {
+      try { p.currentTime(clamped) } catch {}
+      return
+    }
+    // Check buffered — if target is inside it, native seek works and
+    // is instant (no transcode respawn). Only go the reload route
+    // when we actually have to.
+    try {
+      const buf = p.buffered()
+      for (let i = 0; i < buf.length; i++) {
+        if (clamped >= buf.start(i) - 0.5 && clamped <= buf.end(i) + 0.5) {
+          p.currentTime(clamped)
+          return
+        }
+      }
+    } catch {}
+    // Out of buffer on /remux — rebuild URL with ?t= and reload.
+    // Critically: we do NOT call player.currentTime() here, so the
+    // browser never fires a native seek that would then trip
+    // Accept-Ranges:none into a decode error. Clean swap, no race.
+    const base = currentSrc.split('?')[0]
+    const qs = new URLSearchParams(currentSrc.split('?')[1] || '')
+    qs.delete('t'); qs.delete('fresh')
+    qs.set('t', String(Math.max(0, Math.floor(clamped))))
+    // Save the target so the new player can display the correct
+    // progress the moment it loads (we read it back in the
+    // `loadedmetadata` handler to shift the UI's time axis).
+    remuxTimeOffsetRef.current = Math.max(0, Math.floor(clamped))
+    const reloaded = `${base}?${qs.toString()}`
+    setSource(reloaded)
+    setStreamBaseUrl(base)
+  }, [source])
+
   const handleAudioChange = useCallback((audioIdx) => {
     if (!streamInfoHash) return
     setActiveAudioIdx(audioIdx)
@@ -5002,6 +5034,7 @@ function App() {
                       onDlnaCast={castDlna}
                       onDlnaStop={stopDlna}
                       onDlnaRefresh={refreshDlna}
+                      onSeek={seekRemuxAware}
                     />
                   </div>
                 </>
