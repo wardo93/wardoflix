@@ -1,0 +1,17 @@
+{
+  "_comment_top": "== WardoFlix access policy == See ACCESS_CONTROL.md for how to edit. Commit to main; every client fetches this from raw.githubusercontent.com on every launch.",
+  "version": 1,
+  "mode": "open",
+  "_comment_mode": "open | allowlist | blocklist. 'open' = let everyone in (soft-rollout period). 'allowlist' = only IDs in allow[] can run. 'blocklist' = everyone except blocked[].",
+  "allow": [],
+  "_comment_allow": "Populate this with install IDs before flipping mode to 'allowlist'. Each authorized user sends you their ID (visible in their debug overlay, Ctrl+Shift+D).",
+  "blocked": [],
+  "_comment_blocked": "Always wins regardless of mode. Add an ID here to revoke a specific user even while mode=open.",
+  "message": "Your WardoFlix installation has not been authorized by the owner. If you believe this is a mistake, send the ID shown below to Ward.",
+  "telemetry": {
+    "_comment": "Optional. Delete this block, or set disabled:true, to skip pings. Leave url blank to skip. If set, every client POSTs {installId, version, platform, ts} on startup. For a Discord webhook set format:'discord' — the body becomes a chat-friendly one-liner.",
+    "url": "",
+    "format": "json",
+    "disabled": true
+  }
+}

@@ -14,6 +14,8 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { autoUpdater } = require('electron-updater')
 
+import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId } from './access-control.js'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
 
@@ -534,9 +536,55 @@ function showServerErrorOverlay() {
   mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
+// Cached result so the renderer (via IPC) and telemetry can see the
+// install ID without re-running the fetch.
+let accessResult = null
+
+function showAccessDeniedWindow(result) {
+  // Minimal window — no server, no updater polling, no Chromium features
+  // that could load the real UI. Just the denial HTML.
+  const win = new BrowserWindow({
+    width: 620, height: 540, resizable: false, minimizable: false, maximizable: false,
+    backgroundColor: '#0b0d12', autoHideMenuBar: true, title: 'WardoFlix',
+    icon: path.join(__dirname, '..', 'build', 'icon.ico'),
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  const html = buildDeniedHtml({ installId: result.installId, message: result.message })
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  win.on('closed', () => {
+    // Access-denied windows are terminal: when the user closes this, the
+    // app exits. There's no path from here to the real UI.
+    app.quit()
+  })
+}
+
 app.whenReady().then(async () => {
-  startServer()
   Menu.setApplicationMenu(null)
+  // Run the access check BEFORE spawning the server or opening the main
+  // window. If the user isn't allowed we never start the Express server
+  // (nothing expensive runs) and we never expose the streaming UI.
+  // Bypass entirely in dev so I can develop without rigging myself in.
+  if (!isDev) {
+    try {
+      accessResult = await checkAccess({ userDataDir: userData, log })
+      log(`[access] id=${accessResult.installId} allowed=${accessResult.allowed} reason=${accessResult.reason} source=${accessResult.source}`)
+    } catch (e) {
+      // The access check itself shouldn't throw (internally wrapped), but
+      // if something pathological happens we fail open with a warning
+      // rather than bricking the legitimate owner.
+      log('[access] check threw:', e?.stack || e?.message || e)
+      accessResult = { allowed: true, installId: getOrCreateInstallId(userData), reason: 'check-error', source: 'error' }
+    }
+    if (!accessResult.allowed) {
+      showAccessDeniedWindow(accessResult)
+      return // Skip server, updater, main window — everything.
+    }
+  } else {
+    accessResult = { allowed: true, installId: getOrCreateInstallId(userData), reason: 'dev-mode', source: 'dev' }
+    log(`[access] dev mode — check skipped, id=${accessResult.installId}`)
+  }
+
+  startServer()
   setupAutoUpdater()
   createWindow()
   startUpdaterPolling()
@@ -546,10 +594,31 @@ app.whenReady().then(async () => {
     if (!ok && !isDev) showServerErrorOverlay()
   })
 
+  // Fire the optional telemetry ping after the window's up (non-blocking).
+  // Only runs if the policy specified a telemetry endpoint; otherwise no-op.
+  try {
+    reportTelemetry({
+      policy: accessResult.policy,
+      installId: accessResult.installId,
+      version: app.getVersion(),
+      platform: `${process.platform}-${process.arch}`,
+      log,
+    })
+  } catch {}
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+// Expose the install ID + access state to the renderer so the debug
+// overlay can display it (and users can copy it to send to the owner).
+ipcMain.handle('access:getInfo', () => ({
+  installId: accessResult?.installId || null,
+  reason: accessResult?.reason || null,
+  source: accessResult?.source || null,
+  appVersion: app.getVersion(),
+}))
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

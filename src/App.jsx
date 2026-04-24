@@ -3515,6 +3515,23 @@ function DebugOverlay({
   activeAudioIdx,
   onClose,
 }) {
+  // Install-ID state — fetched lazily from the main process on overlay
+  // mount. Exposed here so users can copy it to request allowlisting
+  // (see electron/access-control.js).
+  const [accessInfo, setAccessInfo] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    try {
+      window.wardoflixAccess?.getInfo?.().then((info) => {
+        if (!cancelled) setAccessInfo(info)
+      }).catch(() => {})
+    } catch {}
+    return () => { cancelled = true }
+  }, [])
+  const copyInstallId = async () => {
+    if (!accessInfo?.installId) return
+    try { await navigator.clipboard?.writeText(accessInfo.installId) } catch {}
+  }
   // Which endpoint is the player on right now? Derived from the URL
   // instead of kept as a separate state value so it can't drift.
   const endpoint = (() => {
@@ -3575,9 +3592,11 @@ function DebugOverlay({
         <dt>Base URL</dt><dd className="wf-debug-mono wf-debug-wrap">{streamBaseUrl || '—'}</dd>
         <dt>Last error</dt><dd>{playbackError ? `code ${playbackError.code}: ${playbackError.message}` : '—'}</dd>
         <dt>Warning</dt><dd>{streamWarning || '—'}</dd>
+        <dt>Install ID</dt><dd className="wf-debug-mono wf-debug-wrap" title={accessInfo?.installId || ''}>{accessInfo?.installId || '—'}</dd>
       </dl>
       <div className="wf-debug-foot">
         <button type="button" className="wf-debug-btn" onClick={copyAll}>Copy as JSON</button>
+        <button type="button" className="wf-debug-btn" onClick={copyInstallId} disabled={!accessInfo?.installId}>Copy install ID</button>
       </div>
     </div>
   )
