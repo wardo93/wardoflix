@@ -247,10 +247,14 @@
         fillColor: color,
         fillOpacity: 0.5,
       })
+      const geoLine = r.geoSource === 'gps'
+        ? `GPS · ±${r.gpsAccuracy != null ? r.gpsAccuracy + 'm' : '?'}`
+        : 'IP · ~metro'
       marker.bindPopup(`
         <div class="popup">
           <div class="id-line">${r.installId}</div>
           <div><strong>${r.city || '?'}</strong>${r.country ? ', ' + r.country : ''}</div>
+          <div style="color:#666;font-size:11px">${geoLine}</div>
           <div>v${r.version || '?'} · ${r.platform || '?'}</div>
           <div>${r.launches || 0} launches</div>
           <div>First: ${fmtRelative(r.firstSeen)}</div>

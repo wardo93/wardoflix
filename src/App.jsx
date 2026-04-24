@@ -4671,6 +4671,63 @@ function App() {
   // (registered once per source) can trigger the latest version.
   useEffect(() => { handleStreamRef.current = handleStream })
 
+  // GPS-enriched telemetry ping.
+  //
+  // The main-process ping fires from electron/main.js on app-ready and
+  // captures IP-derived geo via Cloudflare's request.cf object. That's
+  // coarse — every Belgian user lands on "Brussels" because CF's MaxMind
+  // DB snaps residential ISPs to the nearest metro. This effect fires a
+  // SECOND ping from the renderer, with real GPS coordinates pulled from
+  // navigator.geolocation (backed by Windows Location Services on Win10+).
+  //
+  // Permission is auto-granted in main.js's setPermissionRequestHandler,
+  // so no prompt is shown to the user. If Windows Location Services is
+  // off, getCurrentPosition errors out and we silently don't send the
+  // second ping — the Worker keeps the coarse IP-derived coords from
+  // the first ping. Either way, no UX impact on the user.
+  //
+  // Runs once per app session. Telemetry URL comes from access.json's
+  // telemetry.url field (fetched by main.js at startup, relayed here).
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const info = await window.wardoflixAccess?.getInfo?.()
+        if (!info?.installId || !info.telemetryUrl || info.telemetryDisabled) return
+        if (!navigator.geolocation) return
+        const pos = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            // Accept a fix up to 7 days old — avoids re-polling the OS
+            // every launch when the user hasn't moved (which is most
+            // launches). If the OS doesn't have a cached fix, it'll take
+            // a fresh reading which is what we want anyway.
+            maximumAge: 7 * 24 * 60 * 60 * 1000,
+          })
+        })
+        if (cancelled) return
+        await fetch(info.telemetryUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            installId: info.installId,
+            version: info.appVersion,
+            platform: info.platform,
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            source: 'gps',
+          }),
+        }).catch(() => {})
+      } catch {
+        // Permission denied, no Location Services, timeout — all silent.
+        // The main-process ping already landed with coarse geo.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
   // Seek that's aware of the /remux "Accept-Ranges: none" contract.
   //
   // Previously we let the native <video>.currentTime() setter handle

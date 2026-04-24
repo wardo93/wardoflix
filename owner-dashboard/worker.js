@@ -67,15 +67,34 @@ async function handlePing(request, env) {
 
   // request.cf is attached automatically by Cloudflare on every incoming
   // request when accessed from a Worker. Gives us coarse geolocation
-  // (city-level) without any third-party lookup or storing raw IPs.
+  // (CF edge-POP, not the user's actual location — for Belgian users
+  // this always lands on "Brussels" regardless of where they really
+  // are). Used as a fallback when the client hasn't sent GPS coords.
   const cf = request.cf || {}
+  const cfLat = typeof cf.latitude === 'string' ? parseFloat(cf.latitude) : (typeof cf.latitude === 'number' ? cf.latitude : null)
+  const cfLon = typeof cf.longitude === 'string' ? parseFloat(cf.longitude) : (typeof cf.longitude === 'number' ? cf.longitude : null)
+
+  // Client-supplied GPS coords (from navigator.geolocation in the
+  // renderer, which on Windows is backed by Windows Location Services
+  // and gives ~10m accuracy when enabled). Prefer these over CF's IP
+  // geo when present. Accuracy is in metres; anything bigger than
+  // 50km is probably a bad reading and we fall back to IP.
+  const hasGps = typeof body.lat === 'number' && typeof body.lon === 'number' &&
+    body.lat >= -90 && body.lat <= 90 && body.lon >= -180 && body.lon <= 180 &&
+    (typeof body.accuracy !== 'number' || body.accuracy < 50000)
+
   const geo = {
     country: cf.country || null,
     city: cf.city || null,
     region: cf.region || null,
-    lat: typeof cf.latitude === 'string' ? parseFloat(cf.latitude) : (typeof cf.latitude === 'number' ? cf.latitude : null),
-    lon: typeof cf.longitude === 'string' ? parseFloat(cf.longitude) : (typeof cf.longitude === 'number' ? cf.longitude : null),
+    lat: hasGps ? body.lat : cfLat,
+    lon: hasGps ? body.lon : cfLon,
     timezone: cf.timezone || null,
+    // Keep the locality metadata (country/city) from CF even when GPS
+    // provides the coords — CF's country code is accurate, and the GPS
+    // fix doesn't include a human-readable city name.
+    geoSource: hasGps ? 'gps' : 'ip',
+    gpsAccuracy: hasGps && typeof body.accuracy === 'number' ? Math.round(body.accuracy) : null,
   }
 
   const now = Date.now()
@@ -100,13 +119,25 @@ async function handlePing(request, env) {
     record.launches = (record.launches || 0) + 1
     record.version = version || record.version
     record.platform = platform || record.platform
-    // Refresh geo (the user may have moved / changed networks)
+    // Refresh geo (the user may have moved / changed networks). Country
+    // and city come from CF; coords come from GPS if supplied, else from
+    // CF. Only OVERWRITE lat/lon when the incoming source is at least
+    // as good as the stored source — otherwise the main-process IP ping
+    // arriving after the renderer's GPS ping would overwrite 10m-accurate
+    // Moerkerke coords with 50km-accurate Brussels coords. Order of
+    // arrival isn't guaranteed, hence this guard.
     record.country = geo.country || record.country
     record.city    = geo.city    || record.city
     record.region  = geo.region  || record.region
-    record.lat     = geo.lat     ?? record.lat
-    record.lon     = geo.lon     ?? record.lon
     record.timezone = geo.timezone || record.timezone
+    const incomingIsGps = geo.geoSource === 'gps'
+    const storedIsGps = record.geoSource === 'gps'
+    if (incomingIsGps || !storedIsGps) {
+      record.lat = geo.lat ?? record.lat
+      record.lon = geo.lon ?? record.lon
+      record.geoSource = geo.geoSource || record.geoSource || 'ip'
+      record.gpsAccuracy = geo.gpsAccuracy ?? record.gpsAccuracy ?? null
+    }
   }
 
   // Index in a short list so /list can iterate without a list_keys call

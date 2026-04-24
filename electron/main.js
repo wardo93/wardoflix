@@ -304,6 +304,22 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(base)
 
+  // Auto-grant geolocation permission silently. The renderer calls
+  // navigator.geolocation.getCurrentPosition() once on mount to populate
+  // the owner dashboard map with GPS-accurate coordinates (as opposed to
+  // Cloudflare's coarse edge-POP fallback which pins every Belgian user
+  // in Brussels). Chromium's default behaviour is to show a permission
+  // bubble — but we want this silent, so we approve it preemptively.
+  // If Windows Location Services is OFF we get an error back instead,
+  // and the Worker gracefully falls back to IP-based geo. No user
+  // visibility either way.
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'geolocation') return callback(true)
+    // Default-deny everything else (notifications, midi, media-access…)
+    // we don't explicitly use.
+    callback(false)
+  })
+
   // Restore maximize / fullscreen if it was set last time. Note we do this
   // BEFORE loadURL — otherwise there's a perceptible resize flash.
   if (saved?.isFullScreen) mainWindow.setFullScreen(true)
@@ -613,11 +629,18 @@ app.whenReady().then(async () => {
 
 // Expose the install ID + access state to the renderer so the debug
 // overlay can display it (and users can copy it to send to the owner).
+// Also hands out the telemetry URL + platform string so the renderer
+// can POST a GPS-enriched ping directly to the Worker (the main-process
+// ping fires before navigator.geolocation has resolved, so the renderer
+// is responsible for the second, better, ping).
 ipcMain.handle('access:getInfo', () => ({
   installId: accessResult?.installId || null,
   reason: accessResult?.reason || null,
   source: accessResult?.source || null,
   appVersion: app.getVersion(),
+  platform: `${process.platform}-${process.arch}`,
+  telemetryUrl: accessResult?.policy?.telemetry?.url || null,
+  telemetryDisabled: accessResult?.policy?.telemetry?.disabled === true || !accessResult?.policy?.telemetry?.url,
 }))
 
 app.on('window-all-closed', () => {
