@@ -4718,40 +4718,55 @@ function App() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      const info = await window.wardoflixAccess?.getInfo?.().catch(() => null)
+      if (!info?.installId || !info.telemetryUrl || info.telemetryDisabled) return
+      // Shared helper so success AND failure both ping, just with
+      // different bodies. The failure ping is a diagnostic: it records
+      // WHY geolocation failed (code + message) into the Worker so the
+      // owner dashboard can show the real reason — otherwise a silent
+      // catch leaves us staring at a pin in Brussels with no clue why
+      // the GPS path didn't run.
+      const ping = (extra) => fetch(info.telemetryUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          installId: info.installId,
+          version: info.appVersion,
+          platform: info.platform,
+          osUser: info.osUser || null,
+          friendlyName: info.friendlyName || null,
+          ...extra,
+        }),
+      }).catch(() => {})
+
+      if (!navigator.geolocation) {
+        ping({ geoError: 'no navigator.geolocation' })
+        return
+      }
       try {
-        const info = await window.wardoflixAccess?.getInfo?.()
-        if (!info?.installId || !info.telemetryUrl || info.telemetryDisabled) return
-        if (!navigator.geolocation) return
         const pos = await new Promise((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, {
             enableHighAccuracy: true,
             timeout: 10000,
-            // Accept a fix up to 7 days old — avoids re-polling the OS
-            // every launch when the user hasn't moved (which is most
-            // launches). If the OS doesn't have a cached fix, it'll take
-            // a fresh reading which is what we want anyway.
             maximumAge: 7 * 24 * 60 * 60 * 1000,
           })
         })
         if (cancelled) return
-        await fetch(info.telemetryUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            installId: info.installId,
-            version: info.appVersion,
-            platform: info.platform,
-            lat: pos.coords.latitude,
-            lon: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-            source: 'gps',
-            osUser: info.osUser || null,
-            friendlyName: info.friendlyName || null,
-          }),
-        }).catch(() => {})
-      } catch {
-        // Permission denied, no Location Services, timeout — all silent.
-        // The main-process ping already landed with coarse geo.
+        await ping({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          source: 'gps',
+        })
+      } catch (err) {
+        // Map Chromium's PositionError codes to readable tags.
+        //   1 = PERMISSION_DENIED (unlikely — we auto-grant in main)
+        //   2 = POSITION_UNAVAILABLE (no GPS, no WiFi, or Google API
+        //       key missing / invalid)
+        //   3 = TIMEOUT
+        const code = err?.code ?? '?'
+        const tag = code === 1 ? 'denied' : code === 2 ? 'unavailable' : code === 3 ? 'timeout' : `code-${code}`
+        await ping({ geoError: `${tag}:${err?.message || ''}`.slice(0, 200) })
       }
     })()
     return () => { cancelled = true }

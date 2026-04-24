@@ -71,6 +71,11 @@ async function handlePing(request, env) {
   // can't fill KV with a huge blob.
   const osUser = body.osUser ? String(body.osUser).slice(0, 64) : null
   const friendlyName = body.friendlyName ? String(body.friendlyName).slice(0, 64) : null
+  // Client-side geolocation diagnostic. Lets the owner see WHY a given
+  // install can't provide GPS coords — usually "unavailable" (Google
+  // API key rejected, or Windows Location Services off). Capped to
+  // keep record size bounded.
+  const geoError = body.geoError ? String(body.geoError).slice(0, 200) : null
 
   // request.cf is attached automatically by Cloudflare on every incoming
   // request when accessed from a Worker. Gives us coarse geolocation
@@ -121,6 +126,7 @@ async function handlePing(request, env) {
       platform,
       osUser,
       friendlyName,
+      geoError,
       ...geo,
     }
   } else {
@@ -133,6 +139,15 @@ async function handlePing(request, env) {
     // them; renderer ping does).
     if (osUser) record.osUser = osUser
     if (friendlyName) record.friendlyName = friendlyName
+    // Update geoError only on pings that carry it (both success and
+    // failure renderer pings do — success sends null, failure sends the
+    // error tag). Main-process IP pings don't send it, so they won't
+    // clobber a previous diagnostic.
+    if (body.hasOwnProperty('geoError')) record.geoError = geoError
+    // If this ping brought GPS coords, the client is clearly working;
+    // wipe any previously stored error so the dashboard doesn't keep
+    // showing a stale "unavailable" badge forever.
+    if (hasGps) record.geoError = null
     // Refresh geo (the user may have moved / changed networks). Country
     // and city come from CF; coords come from GPS if supplied, else from
     // CF. Only OVERWRITE lat/lon when the incoming source is at least

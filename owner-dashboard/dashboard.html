@@ -254,7 +254,9 @@
       })
       const geoLine = r.geoSource === 'gps'
         ? `GPS · ±${r.gpsAccuracy != null ? r.gpsAccuracy + 'm' : '?'}`
-        : 'IP · ~metro'
+        : r.geoError
+          ? `IP only · GPS failed: ${r.geoError}`
+          : 'IP · ~metro'
       const headerName = r.friendlyName
         ? `<div style="font-weight:600;font-size:14px">${r.friendlyName}</div>`
         : r.osUser

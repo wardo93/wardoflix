@@ -556,18 +556,30 @@ function showServerErrorOverlay() {
 // install ID without re-running the fetch.
 let accessResult = null
 
-// Apply Chromium command-line switches from the CACHED policy before
-// app.whenReady(). Switches (like --geolocation-api-key) are read by
-// Chromium at init-time and ignored later. The cached policy is the
-// previous launch's successful fetch of access.json — it's slightly
-// stale but good enough for init-time config. On the first launch after
-// updating (no cache yet), geolocation won't get the key until the
-// SECOND launch — acceptable tradeoff.
+// Apply Google API key from the CACHED policy before app.whenReady().
+// Two paths are applied belt-and-suspenders because Electron has
+// changed its geolocation config surface a few times:
+//   - process.env.GOOGLE_API_KEY  — the official environment variable
+//     Chromium reads for Google services (including Geolocation).
+//     This is the documented/current way.
+//   - app.commandLine.appendSwitch('geolocation-api-key', KEY)
+//     — legacy switch some Electron versions still honoured. Cheap to
+//     include both; whichever one works wins.
+// Both must be set BEFORE app.whenReady() — Chromium latches the
+// config at init-time and ignores runtime changes.
+//
+// Cache dependency: we read the cached policy (last successful fetch)
+// because the network fetch happens AFTER app.whenReady() — too late.
+// Consequence: the VERY FIRST launch after upgrading has no cache and
+// geolocation falls back to Cloudflare's coarse geo. Second launch
+// onward: cache populated, key applied, GPS works.
 try {
   const cachedPolicy = readCachedPolicySync(userData)
-  if (cachedPolicy?.google_maps_api_key) {
-    app.commandLine.appendSwitch('geolocation-api-key', cachedPolicy.google_maps_api_key)
-    log('[access] applied Google Maps geolocation-api-key from cached policy')
+  const key = cachedPolicy?.google_maps_api_key
+  if (key) {
+    process.env.GOOGLE_API_KEY = key
+    try { app.commandLine.appendSwitch('geolocation-api-key', key) } catch {}
+    log('[access] applied Google Maps API key (env + switch) from cached policy')
   }
 } catch (e) { log('[access] failed to apply early switches:', e?.message || e) }
 
