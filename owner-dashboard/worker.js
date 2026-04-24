@@ -64,6 +64,13 @@ async function handlePing(request, env) {
 
   const version = String(body.version || '').slice(0, 32)
   const platform = String(body.platform || '').slice(0, 32)
+  // Optional friendly identifiers that make the dashboard list readable.
+  // osUser is auto-captured from os.userInfo().username on every launch
+  // (e.g. "ward", "Jan"); friendlyName is user-overridable via
+  // userData/friendly-name.txt. Bounded length so a malicious client
+  // can't fill KV with a huge blob.
+  const osUser = body.osUser ? String(body.osUser).slice(0, 64) : null
+  const friendlyName = body.friendlyName ? String(body.friendlyName).slice(0, 64) : null
 
   // request.cf is attached automatically by Cloudflare on every incoming
   // request when accessed from a Worker. Gives us coarse geolocation
@@ -112,6 +119,8 @@ async function handlePing(request, env) {
       launches: 1,
       version,
       platform,
+      osUser,
+      friendlyName,
       ...geo,
     }
   } else {
@@ -119,6 +128,11 @@ async function handlePing(request, env) {
     record.launches = (record.launches || 0) + 1
     record.version = version || record.version
     record.platform = platform || record.platform
+    // Keep the last-reported name fields. Null incoming doesn't clobber
+    // a previously-known name (main-process ping doesn't always send
+    // them; renderer ping does).
+    if (osUser) record.osUser = osUser
+    if (friendlyName) record.friendlyName = friendlyName
     // Refresh geo (the user may have moved / changed networks). Country
     // and city come from CF; coords come from GPS if supplied, else from
     // CF. Only OVERWRITE lat/lon when the incoming source is at least

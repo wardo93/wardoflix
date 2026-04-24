@@ -184,6 +184,8 @@
     else {
       filtered = records.filter(r =>
         (r.installId && r.installId.toLowerCase().includes(q)) ||
+        (r.osUser && r.osUser.toLowerCase().includes(q)) ||
+        (r.friendlyName && r.friendlyName.toLowerCase().includes(q)) ||
         (r.city && r.city.toLowerCase().includes(q)) ||
         (r.country && r.country.toLowerCase().includes(q)) ||
         (r.version && r.version.toLowerCase().includes(q))
@@ -215,8 +217,11 @@
       const row = document.createElement('div')
       row.className = 'row' + (r.installId === selectedId ? ' active' : '')
       const bucket = bucketFor(r.lastSeen)
+      const displayName = r.friendlyName || r.osUser || r.installId
+      const nameIsUuid = displayName === r.installId
       row.innerHTML = `
-        <div class="id"><span class="dot ${bucket}"></span>${r.installId}</div>
+        <div class="id"><span class="dot ${bucket}"></span>${nameIsUuid ? r.installId : `<strong style="color:var(--text)">${displayName}</strong>`}</div>
+        ${!nameIsUuid ? `<div class="id" style="margin-top:3px;opacity:0.7">${r.installId}</div>` : ''}
         <div class="meta">
           <span>${r.city || '?'}${r.country ? ', ' + r.country : ''}</span>
           <span>v${r.version || '?'}</span>
@@ -250,8 +255,14 @@
       const geoLine = r.geoSource === 'gps'
         ? `GPS · ±${r.gpsAccuracy != null ? r.gpsAccuracy + 'm' : '?'}`
         : 'IP · ~metro'
+      const headerName = r.friendlyName
+        ? `<div style="font-weight:600;font-size:14px">${r.friendlyName}</div>`
+        : r.osUser
+          ? `<div style="font-weight:600;font-size:13px">${r.osUser} <span style="opacity:0.5;font-weight:400">(PC user)</span></div>`
+          : ''
       marker.bindPopup(`
         <div class="popup">
+          ${headerName}
           <div class="id-line">${r.installId}</div>
           <div><strong>${r.city || '?'}</strong>${r.country ? ', ' + r.country : ''}</div>
           <div style="color:#666;font-size:11px">${geoLine}</div>

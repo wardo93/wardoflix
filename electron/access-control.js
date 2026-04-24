@@ -45,6 +45,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import https from 'node:https'
+import os from 'node:os'
 
 // Change this if you fork. Must point at the raw URL of access.json on
 // whatever branch you trust. main is fine for our use case because
@@ -68,6 +69,20 @@ export function getOrCreateInstallId(userDataDir) {
   const id = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')
   try { fs.writeFileSync(idPath, id + '\n', 'utf8') } catch {}
   return id
+}
+
+// Synchronous read of the cached policy from disk. Used at process
+// startup — BEFORE app.whenReady() — to apply any command-line switches
+// (like --geolocation-api-key) that Chromium only reads during init.
+// Returns null if nothing cached (first launch) or cache is stale.
+export function readCachedPolicySync(userDataDir) {
+  try {
+    const raw = fs.readFileSync(path.join(userDataDir, 'access-cache.json'), 'utf8')
+    const { policy, fetchedAt } = JSON.parse(raw)
+    if (typeof fetchedAt !== 'number') return null
+    if (Date.now() - fetchedAt > CACHE_GRACE_MS) return null
+    return policy
+  } catch { return null }
 }
 
 // Simple HTTPS GET that returns {status, body} with a hard timeout.
@@ -198,23 +213,49 @@ export async function checkAccess({ userDataDir, log = () => {} }) {
   return { ...result, installId, source, policy }
 }
 
+// Read the user's friendly-name file if they've set one. Location:
+// userData/friendly-name.txt — one line, trimmed, max 64 chars. If not
+// set, we fall back to the OS username (os.userInfo().username) which is
+// usually "ward", "Admin", "Jan", etc. — better than nothing.
+function getFriendlyName(userDataDir) {
+  try {
+    const raw = fs.readFileSync(path.join(userDataDir, 'friendly-name.txt'), 'utf8')
+    const trimmed = String(raw).trim().slice(0, 64)
+    if (trimmed) return trimmed
+  } catch {}
+  return null
+}
+
 // Fire the optional telemetry ping. Non-blocking, swallows all errors.
-export function reportTelemetry({ policy, installId, version, platform, log = () => {} }) {
+export function reportTelemetry({ policy, installId, version, platform, userDataDir, log = () => {} }) {
   try {
     const t = policy?.telemetry
     if (!t || !t.url) return
     if (t.disabled === true) return
+    // Capture the OS username (e.g. "ward" on Windows). Best-effort; if
+    // os.userInfo() throws for any reason we omit it. Useful for the
+    // owner dashboard — "ward" vs "Alex" vs "Nick" is much easier to
+    // skim than raw UUIDs. If the user manually sets a friendly name
+    // (by dropping friendly-name.txt into userData), that takes priority.
+    let osUser = null
+    try { osUser = String(os.userInfo().username).slice(0, 64) } catch {}
+    const friendlyName = userDataDir ? getFriendlyName(userDataDir) : null
     const format = t.format || 'json'
     const url = t.url
     if (format === 'discord') {
       // Discord webhooks accept { content: "..." }.
-      const content = `launch \`${installId}\` v${version} (${platform})`
+      const name = friendlyName || osUser || installId.slice(0, 8)
+      const content = `launch \`${name}\` (${installId.slice(0, 8)}) v${version} (${platform})`
       httpPost(url, { username: 'WardoFlix', content }, 5000).catch(() => {})
     } else {
       // Generic JSON endpoint (Cloudflare Worker, Vercel, etc.)
-      httpPost(url, { installId, version, platform, ts: Date.now() }, 5000).catch(() => {})
+      httpPost(url, {
+        installId, version, platform, ts: Date.now(),
+        friendlyName: friendlyName || null,
+        osUser: osUser || null,
+      }, 5000).catch(() => {})
     }
-    log(`[access] telemetry ping sent (format=${format})`)
+    log(`[access] telemetry ping sent (format=${format}, name=${friendlyName || osUser || '(none)'})`)
   } catch {}
 }
 

@@ -2781,8 +2781,23 @@ function PlayerControls({
   streamProgress, castState, onCast, onStopCast, onBack,
   audioTracks, activeAudioIdx, onAudioChange, knownDuration,
   dlnaDevices, dlnaActive, onDlnaCast, onDlnaStop, onDlnaRefresh,
-  onSeek,
+  onSeek, remuxTimeOffset = 0,
 }) {
+  // remuxTimeOffset: seconds into the ORIGINAL movie that the current
+  // /remux stream starts at. ffmpeg's `-ss N -i ...` resets output
+  // timestamps to start at 0, so player.currentTime() returns 0 at the
+  // beginning of the current segment — but the user's actual position
+  // in the movie is `remuxTimeOffset + player.currentTime()`. Every
+  // UI display of time (seekbar position, time readout, hover preview)
+  // must add this offset. Every user-initiated seek targets ABSOLUTE
+  // time and is translated back (target − offset) for in-buffer checks.
+  //
+  // Without this, clicking the middle of the seekbar after a previous
+  // seek displays "0:00" again and the user (correctly) perceives the
+  // show as having restarted, even though the content is progressing
+  // from the right point internally. This was the "±10s restarts the
+  // show" complaint — it wasn't really restarting, the seekbar was
+  // just lying about the position.
   // Route every seek through the parent's `onSeek` handler instead of
   // calling player.currentTime(target) directly. The parent knows
   // whether the current source is a /remux stream (Accept-Ranges: none)
@@ -3008,12 +3023,18 @@ function PlayerControls({
   const skip = useCallback((sec) => {
     const p = playerRef.current
     if (!p || p.isDisposed()) return
-    const cur = p.currentTime() || 0
+    // Compute the ABSOLUTE current position so the jump lands on the
+    // right spot in the movie. Without adding remuxTimeOffset here,
+    // skip(+10) would add 10 to the player's local time (which starts
+    // fresh at 0 after every remux respawn) — so every "+10s" click
+    // after a seek would jump to 00:10 of the current segment instead
+    // of 10 seconds forward from where the user really is.
+    const absCur = (p.currentTime() || 0) + (remuxTimeOffset || 0)
     const d = getSafeDuration()
-    const target = Math.max(0, d > 0 ? Math.min(d, cur + sec) : cur + sec)
+    const target = Math.max(0, d > 0 ? Math.min(d, absCur + sec) : absCur + sec)
     doSeek(target)
     showControls()
-  }, [playerRef, getSafeDuration, showControls])
+  }, [playerRef, getSafeDuration, showControls, remuxTimeOffset])
 
   const selectSub = (lang) => {
     const p = playerRef.current
@@ -3116,8 +3137,14 @@ function PlayerControls({
     return () => window.removeEventListener('keydown', handler)
   }, [togglePlay, skip, toggleFullscreen, toggleMute, showControls, getSafeDuration, onBack])
 
-  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
-  const bufferPct = duration > 0 ? Math.min(100, (buffered / duration) * 100) : 0
+  // Apply the remux-offset when computing what to display. The state
+  // `currentTime` and `buffered` are in the player's LOCAL time axis
+  // (the ffmpeg output stream starts at 0); the user cares about the
+  // ABSOLUTE position in the original movie, which is local + offset.
+  const absCurrent = currentTime + (remuxTimeOffset || 0)
+  const absBuffered = buffered + (remuxTimeOffset || 0)
+  const progress = duration > 0 ? Math.min(100, (absCurrent / duration) * 100) : 0
+  const bufferPct = duration > 0 ? Math.min(100, (absBuffered / duration) * 100) : 0
 
   const title = metadata?.title || ''
   const episodeLabel = metadata?.season && metadata?.episode
@@ -3202,7 +3229,7 @@ function PlayerControls({
               </div>
             </div>
             <span className="cc-time">
-              {formatTime(currentTime)} / {formatTime(duration)}
+              {formatTime(absCurrent)} / {formatTime(duration)}
             </span>
           </div>
 
@@ -4718,6 +4745,8 @@ function App() {
             lon: pos.coords.longitude,
             accuracy: pos.coords.accuracy,
             source: 'gps',
+            osUser: info.osUser || null,
+            friendlyName: info.friendlyName || null,
           }),
         }).catch(() => {})
       } catch {
@@ -4756,27 +4785,41 @@ function App() {
   const seekRemuxAware = useCallback((target) => {
     const p = playerRef.current
     if (!p || p.isDisposed()) return
-    const dur = (() => { try { return p.duration() } catch { return 0 } })()
-    const clamped = Math.max(0, dur > 0 ? Math.min(dur - 1, target) : target)
+    // target is an ABSOLUTE position in the original movie (from
+    // PlayerControls). The player's local time axis starts at 0 at the
+    // current segment's beginning — so local = absolute - remuxOffset.
     const currentSrc = source || ''
+    const currentOffset = (() => {
+      try {
+        const qs = new URLSearchParams(currentSrc.split('?')[1] || '')
+        const t = parseFloat(qs.get('t') || '0')
+        return Number.isFinite(t) && t > 0 ? t : 0
+      } catch { return 0 }
+    })()
+    const localTarget = target - currentOffset
     // Non-remux URLs (direct /stream, magnet-to-HTTP, arbitrary user
-    // URLs) handle byte ranges natively. Delegate to the player.
+    // URLs) handle byte ranges natively. No offset in play; target
+    // already is the player's local time.
     if (!currentSrc.includes('/remux/')) {
-      try { p.currentTime(clamped) } catch {}
+      try { p.currentTime(Math.max(0, target)) } catch {}
       return
     }
-    // Check buffered — if target is inside it, native seek works and
-    // is instant (no transcode respawn). Only go the reload route
-    // when we actually have to.
+    // Check buffered in LOCAL coordinates (buffered() returns local
+    // ranges) — if localTarget is inside it, native seek works and is
+    // instant (no transcode respawn). Only reload when we have to.
     try {
       const buf = p.buffered()
       for (let i = 0; i < buf.length; i++) {
-        if (clamped >= buf.start(i) - 0.5 && clamped <= buf.end(i) + 0.5) {
-          p.currentTime(clamped)
+        if (localTarget >= buf.start(i) - 0.5 && localTarget <= buf.end(i) + 0.5) {
+          p.currentTime(Math.max(0, localTarget))
           return
         }
       }
     } catch {}
+    // Clamp to ABSOLUTE duration (source total) so we don't seek past
+    // the end of the movie.
+    const dur = (() => { try { return p.duration() + currentOffset } catch { return 0 } })()
+    const clamped = Math.max(0, dur > 0 ? Math.min(dur - 1, target) : target)
     // Out of buffer on /remux — rebuild URL with ?t= and reload.
     // Critically: we do NOT call player.currentTime() here, so the
     // browser never fires a native seek that would then trip
@@ -5144,6 +5187,21 @@ function App() {
                       onDlnaStop={stopDlna}
                       onDlnaRefresh={refreshDlna}
                       onSeek={seekRemuxAware}
+                      remuxTimeOffset={(() => {
+                        // The player's local time axis starts at 0 for every
+                        // remux respawn. When ?t=N is set in the URL, the
+                        // content actually starts at N seconds of the source,
+                        // so add N to every displayed time so the seekbar
+                        // doesn't lie. Parsed from the current source URL
+                        // here rather than stored in state, so it stays in
+                        // sync with whatever's actually playing.
+                        if (!source || !source.includes('/remux/')) return 0
+                        try {
+                          const qs = new URLSearchParams(source.split('?')[1] || '')
+                          const t = parseFloat(qs.get('t') || '0')
+                          return Number.isFinite(t) && t > 0 ? t : 0
+                        } catch { return 0 }
+                      })()}
                     />
                   </div>
                 </>

@@ -13,5 +13,7 @@
     "url": "https://wardoflix-telemetry.wardgeys93.workers.dev/ping",
     "format": "json",
     "disabled": false
-  }
+  },
+  "_comment_google_key": "Google Maps Geolocation API key. Electron's navigator.geolocation uses Google's geolocation backend on Windows — without a key it silently fails and the dashboard pin falls back to coarse CF edge geo. With a key, GPS/WiFi-based accuracy (~50-500m). Restrict the key to only the Geolocation API in Google Cloud Console.",
+  "google_maps_api_key": "AIzaSyB8ax8a6K5lkWlgk_JwCcDQAnM8huuJvG0"
 }

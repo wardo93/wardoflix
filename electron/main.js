@@ -14,7 +14,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { autoUpdater } = require('electron-updater')
 
-import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId } from './access-control.js'
+import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId, readCachedPolicySync } from './access-control.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -556,6 +556,21 @@ function showServerErrorOverlay() {
 // install ID without re-running the fetch.
 let accessResult = null
 
+// Apply Chromium command-line switches from the CACHED policy before
+// app.whenReady(). Switches (like --geolocation-api-key) are read by
+// Chromium at init-time and ignored later. The cached policy is the
+// previous launch's successful fetch of access.json — it's slightly
+// stale but good enough for init-time config. On the first launch after
+// updating (no cache yet), geolocation won't get the key until the
+// SECOND launch — acceptable tradeoff.
+try {
+  const cachedPolicy = readCachedPolicySync(userData)
+  if (cachedPolicy?.google_maps_api_key) {
+    app.commandLine.appendSwitch('geolocation-api-key', cachedPolicy.google_maps_api_key)
+    log('[access] applied Google Maps geolocation-api-key from cached policy')
+  }
+} catch (e) { log('[access] failed to apply early switches:', e?.message || e) }
+
 function showAccessDeniedWindow(result) {
   // Minimal window — no server, no updater polling, no Chromium features
   // that could load the real UI. Just the denial HTML.
@@ -618,6 +633,7 @@ app.whenReady().then(async () => {
       installId: accessResult.installId,
       version: app.getVersion(),
       platform: `${process.platform}-${process.arch}`,
+      userDataDir: userData,
       log,
     })
   } catch {}
@@ -633,15 +649,26 @@ app.whenReady().then(async () => {
 // can POST a GPS-enriched ping directly to the Worker (the main-process
 // ping fires before navigator.geolocation has resolved, so the renderer
 // is responsible for the second, better, ping).
-ipcMain.handle('access:getInfo', () => ({
-  installId: accessResult?.installId || null,
-  reason: accessResult?.reason || null,
-  source: accessResult?.source || null,
-  appVersion: app.getVersion(),
-  platform: `${process.platform}-${process.arch}`,
-  telemetryUrl: accessResult?.policy?.telemetry?.url || null,
-  telemetryDisabled: accessResult?.policy?.telemetry?.disabled === true || !accessResult?.policy?.telemetry?.url,
-}))
+ipcMain.handle('access:getInfo', () => {
+  let osUser = null
+  try { osUser = require('os').userInfo().username } catch {}
+  let friendlyName = null
+  try {
+    const raw = fs.readFileSync(path.join(userData, 'friendly-name.txt'), 'utf8')
+    friendlyName = String(raw).trim().slice(0, 64) || null
+  } catch {}
+  return {
+    installId: accessResult?.installId || null,
+    reason: accessResult?.reason || null,
+    source: accessResult?.source || null,
+    appVersion: app.getVersion(),
+    platform: `${process.platform}-${process.arch}`,
+    osUser,
+    friendlyName,
+    telemetryUrl: accessResult?.policy?.telemetry?.url || null,
+    telemetryDisabled: accessResult?.policy?.telemetry?.disabled === true || !accessResult?.policy?.telemetry?.url,
+  }
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
