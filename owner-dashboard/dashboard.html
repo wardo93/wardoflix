@@ -111,8 +111,8 @@
 
 <script>
   // ─── CONFIGURE THESE TWO BEFORE USING ────────────────────────────
-  const WORKER_URL = 'https://wardoflix-telemetry.your-subdomain.workers.dev'
-  const DASHBOARD_KEY = 'paste-your-DASHBOARD_KEY-secret-here'
+  const WORKER_URL = 'https://wardoflix-telemetry.wardgeys93.workers.dev/'
+  const DASHBOARD_KEY = '5f477b6971314fabb45f57f498c79d5c95bc0b1b267503579648f853476b5860'
   // ─────────────────────────────────────────────────────────────────
 
   const HOUR = 60 * 60 * 1000
@@ -147,10 +147,16 @@
     setTimeout(() => el.remove(), 6000)
   }
 
+  // Strip any trailing slash so we don't end up with "...workers.dev//list",
+  // which Cloudflare routes as pathname "//list" and our Worker doesn't
+  // match (routes check exact "/list"). Forgiving whether the user pasted
+  // the URL with or without the trailing slash.
+  const WORKER_BASE = WORKER_URL.replace(/\/+$/, '')
+
   async function fetchRecords() {
     document.getElementById('refresh').disabled = true
     try {
-      const r = await fetch(WORKER_URL + '/list', {
+      const r = await fetch(WORKER_BASE + '/list', {
         headers: { 'x-dashboard-key': DASHBOARD_KEY },
       })
       if (!r.ok) {
@@ -269,9 +275,15 @@
   function initMap() {
     // World view centred roughly over Europe/Atlantic
     map = L.map('map', { zoomControl: true, attributionControl: true }).setView([35, 10], 3)
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
-      maxZoom: 18,
+    // CartoDB "Dark Matter" tiles — dark theme matches the app UI, free,
+    // no referer/usage restrictions (unlike OSM's volunteer tile server
+    // which blocks file:// loads because they send no Referer). The
+    // tilestream is served via a rotating subdomain pool (a/b/c/d) to
+    // parallelise downloads.
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd',
+      attribution: '© OpenStreetMap contributors © CARTO',
+      maxZoom: 19,
     }).addTo(map)
     markerLayer = L.layerGroup().addTo(map)
   }

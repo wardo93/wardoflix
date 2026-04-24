@@ -10,8 +10,8 @@
   "message": "Your WardoFlix installation has not been authorized by the owner. If you believe this is a mistake, send the ID shown below to Ward.",
   "telemetry": {
     "_comment": "Optional. Delete this block, or set disabled:true, to skip pings. Leave url blank to skip. If set, every client POSTs {installId, version, platform, ts} on startup. For a Discord webhook set format:'discord' — the body becomes a chat-friendly one-liner.",
-    "url": "",
+    "url": "https://wardoflix-telemetry.wardgeys93.workers.dev/ping",
     "format": "json",
-    "disabled": true
+    "disabled": false
   }
 }
