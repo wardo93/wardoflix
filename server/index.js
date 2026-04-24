@@ -275,6 +275,19 @@ app.get('/api/version', (req, res) => {
   res.json({ version: APP_VERSION })
 })
 
+// Debug endpoint — the renderer POSTs diagnostics here (always succeeds,
+// same-origin localhost — no CORS, no proxy, nothing to block it).
+// Logged to the Electron log so we can triage geolocation failures
+// without needing the user to open DevTools.
+app.post('/api/debug-log', express.json({ limit: '8kb' }), (req, res) => {
+  try {
+    const tag = String(req.body?.tag || 'debug').slice(0, 32)
+    const msg = String(req.body?.msg || '').slice(0, 2000)
+    console.log(`[renderer:${tag}] ${msg}`)
+  } catch {}
+  res.status(204).end()
+})
+
 // ── Helper: TMDB fetch (in-memory cache + retry) ────────────────
 // In-memory cache stops the Browse page from blanking out when the user
 // returns from streaming — the TMDB API can be slow/rate-limited while

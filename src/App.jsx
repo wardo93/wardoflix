@@ -4717,9 +4717,24 @@ function App() {
   // telemetry.url field (fetched by main.js at startup, relayed here).
   useEffect(() => {
     let cancelled = false
+    // Helper: log to the local Express server, which writes to wardoflix.log.
+    // Much easier than asking the user to open DevTools.
+    const dbg = (tag, msg) => fetch('/api/debug-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag, msg }),
+    }).catch(() => {})
     ;(async () => {
-      const info = await window.wardoflixAccess?.getInfo?.().catch(() => null)
-      if (!info?.installId || !info.telemetryUrl || info.telemetryDisabled) return
+      dbg('geo', 'useEffect fired')
+      const info = await window.wardoflixAccess?.getInfo?.().catch((e) => {
+        dbg('geo', 'getInfo threw: ' + (e?.message || String(e)))
+        return null
+      })
+      dbg('geo', `info: installId=${info?.installId || 'null'} telemetryUrl=${info?.telemetryUrl || 'null'} disabled=${info?.telemetryDisabled}`)
+      if (!info?.installId || !info.telemetryUrl || info.telemetryDisabled) {
+        dbg('geo', 'early return — no installId/url or disabled')
+        return
+      }
       // Shared helper so success AND failure both ping, just with
       // different bodies. The failure ping is a diagnostic: it records
       // WHY geolocation failed (code + message) into the Worker so the
@@ -4737,12 +4752,18 @@ function App() {
           friendlyName: info.friendlyName || null,
           ...extra,
         }),
-      }).catch(() => {})
+      }).catch((e) => {
+        dbg('geo', 'worker fetch threw: ' + (e?.message || String(e)))
+        return null
+      })
 
       if (!navigator.geolocation) {
-        ping({ geoError: 'no navigator.geolocation' })
+        dbg('geo', 'no navigator.geolocation object')
+        const r = await ping({ geoError: 'no navigator.geolocation' })
+        dbg('geo', 'worker ping (no-geo) response: ' + (r?.status || 'network-error'))
         return
       }
+      dbg('geo', 'calling getCurrentPosition')
       try {
         const pos = await new Promise((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, {
@@ -4752,21 +4773,20 @@ function App() {
           })
         })
         if (cancelled) return
-        await ping({
+        dbg('geo', `got position: lat=${pos.coords.latitude} lon=${pos.coords.longitude} acc=${pos.coords.accuracy}`)
+        const r = await ping({
           lat: pos.coords.latitude,
           lon: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
           source: 'gps',
         })
+        dbg('geo', 'worker ping (gps) response: ' + (r?.status || 'network-error'))
       } catch (err) {
-        // Map Chromium's PositionError codes to readable tags.
-        //   1 = PERMISSION_DENIED (unlikely — we auto-grant in main)
-        //   2 = POSITION_UNAVAILABLE (no GPS, no WiFi, or Google API
-        //       key missing / invalid)
-        //   3 = TIMEOUT
         const code = err?.code ?? '?'
         const tag = code === 1 ? 'denied' : code === 2 ? 'unavailable' : code === 3 ? 'timeout' : `code-${code}`
-        await ping({ geoError: `${tag}:${err?.message || ''}`.slice(0, 200) })
+        dbg('geo', `getCurrentPosition failed: code=${code} tag=${tag} msg=${err?.message || ''}`)
+        const r = await ping({ geoError: `${tag}:${err?.message || ''}`.slice(0, 200) })
+        dbg('geo', 'worker ping (fail) response: ' + (r?.status || 'network-error'))
       }
     })()
     return () => { cancelled = true }
