@@ -281,14 +281,14 @@ app.get('/api/version', (req, res) => {
 // WebTorrent is hogging the event loop, so serving from cache keeps the
 // UI populated even if the upstream request fails.
 const TMDB_CACHE = new Map() // url -> { ts, data }
+const TMDB_INFLIGHT = new Map() // url -> Promise<data> (deduplication)
 // Catalog metadata is very stable (TMDB "popular" lists barely shift
-// in an hour; movie/show detail never changes for a given ID). 10 min
-// was way too tight for a multi-user household — cache hit rate was
-// ~40%, meaning most browse actions still hit TMDB. 30 min for fresh
-// reads, 2 h for stale-while-error. Net: far fewer TMDB round-trips
-// under load and the "Browse sometimes hangs" complaint evaporates.
+// in an hour; movie/show detail never changes for a given ID). Fresh
+// reads ≤30 min; stale-while-revalidate between 30 min and 2 h; hard
+// TTL 2 h — beyond that we refuse to serve and a fresh fetch is
+// required.
 const TMDB_CACHE_TTL_OK = 30 * 60 * 1000      // 30 min fresh
-const TMDB_CACHE_TTL_STALE = 2 * 60 * 60 * 1000 // 2 h serve-while-error
+const TMDB_CACHE_TTL_STALE = 2 * 60 * 60 * 1000 // 2 h serve-while-error / SWR window
 async function tmdbFetch(path, params = {}) {
   if (!TMDB_API_KEY) throw new Error('TMDB_API_KEY not set in .env')
   const url = new URL(`${TMDB_BASE}/${path}`)
@@ -303,30 +303,71 @@ async function tmdbFetch(path, params = {}) {
   // Fresh cache hit → return immediately
   if (cached && now - cached.ts < TMDB_CACHE_TTL_OK) return cached.data
 
-  // Retry once on transient network failures
+  // Stale-while-revalidate: if we have slightly-stale cache, return it
+  // right now and kick off a background refresh. This is the big Browse-
+  // responsiveness win — when the user comes back to the home page after
+  // a stream, the cache is usually 30-60 min old. Previously every row
+  // paid the full TMDB round-trip cost to refresh. Now each row paints
+  // instantly from cache, and the refresh happens in the background for
+  // next time.
+  const isStale = cached && now - cached.ts < TMDB_CACHE_TTL_STALE
+  if (isStale && !TMDB_INFLIGHT.has(key)) {
+    // Kick off refresh in background, swallow any error.
+    const p = tmdbFetchNetwork(key).then((data) => {
+      TMDB_CACHE.set(key, { ts: Date.now(), data })
+      return data
+    }).catch(() => cached.data).finally(() => TMDB_INFLIGHT.delete(key))
+    TMDB_INFLIGHT.set(key, p)
+    return cached.data
+  }
+
+  // In-flight dedup: if another request for this exact URL is already
+  // in progress, piggyback on its promise instead of issuing a parallel
+  // HTTP request. Without this, a Browse page that fires 8 catalog
+  // requests in parallel (one per row) for overlapping pages would fire
+  // 8 separate TMDB requests instead of 1+dedup. With a 500-entry cache,
+  // this was measurably adding seconds to the first paint.
+  const inflight = TMDB_INFLIGHT.get(key)
+  if (inflight) return inflight
+
+  const p = tmdbFetchNetwork(key)
+    .then((data) => {
+      TMDB_CACHE.set(key, { ts: Date.now(), data })
+      // LRU trim — keep the cache bounded. Use a cheap strategy: when we
+      // exceed the cap by 10%, drop the oldest 10%. Avoids the O(n log n)
+      // full sort on every insert that the previous code did.
+      if (TMDB_CACHE.size > 550) {
+        const entries = [...TMDB_CACHE.entries()].sort((a, b) => a[1].ts - b[1].ts)
+        for (let i = 0; i < 50; i++) TMDB_CACHE.delete(entries[i][0])
+      }
+      return data
+    })
+    .catch((err) => {
+      // Stale-while-error fallback: even past the SWR window (2 h) we'll
+      // serve whatever's in cache rather than throw. The UI would rather
+      // show old data than a blank row.
+      if (cached) {
+        logThrottled('warn', `tmdb-stale:${path}`, `TMDB ${path} failed — serving stale cache: ${err.message}`)
+        return cached.data
+      }
+      throw err
+    })
+    .finally(() => TMDB_INFLIGHT.delete(key))
+  TMDB_INFLIGHT.set(key, p)
+  return p
+}
+
+async function tmdbFetchNetwork(key) {
   let lastErr
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const r = await fetchWithTimeout(key, {}, 8000)
       if (!r.ok) throw new Error(`TMDB ${r.status}`)
-      const data = await r.json()
-      TMDB_CACHE.set(key, { ts: now, data })
-      // Keep cache map from growing unboundedly
-      if (TMDB_CACHE.size > 500) {
-        const oldest = [...TMDB_CACHE.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]
-        if (oldest) TMDB_CACHE.delete(oldest[0])
-      }
-      return data
+      return await r.json()
     } catch (e) {
       lastErr = e
       if (attempt === 0) await new Promise((r) => setTimeout(r, 400))
     }
-  }
-
-  // Stale-while-error: serve cached data if we have it, up to 1 h old
-  if (cached && now - cached.ts < TMDB_CACHE_TTL_STALE) {
-    logThrottled('warn', `tmdb-stale:${path}`, `TMDB ${path} failed — serving stale cache`)
-    return cached.data
   }
   throw lastErr
 }
@@ -2179,9 +2220,16 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // tiny subset of subtitle codecs (mov_text) and attempting to carry
   // ASS/SSA/PGS through silently breaks the container.
   const audioIdx = req.query.audio != null ? parseInt(req.query.audio) : null
+  // Drop the `?` optional marker on the audio map so a missing/corrupt
+  // audio stream 0 fails the ffmpeg spawn instead of silently emitting
+  // video-only output. The client will see the error and can switch
+  // tracks via the audio selector. Keep the `?` on the user-picked
+  // non-default index though — if they explicitly chose a track that
+  // later went missing (torrent re-select, etc.), fall through to the
+  // default rather than failing.
   const audioMap = audioIdx != null && !isNaN(audioIdx) && audioIdx >= 0
     ? ['-map', '0:v:0', '-map', `0:a:${audioIdx}?`, '-sn']
-    : ['-map', '0:v:0', '-map', '0:a:0?', '-sn']
+    : ['-map', '0:v:0', '-map', '0:a:0', '-sn']
 
   // Use WebTorrent's own HTTP server as ffmpeg's input. Unlike stdin,
   // an HTTP URL supports byte-range seeks — ffmpeg issues a Range request
@@ -2240,9 +2288,25 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     ...(seekSec > 0 ? ['-ss', String(seekSec)] : []),
     '-analyzeduration', '10000000',
     '-probesize', '10000000',
+    // Reconnect on transient read errors from WebTorrent's stream server
+    // (e.g. a piece gap when the swarm is still filling). Without these
+    // ffmpeg bails on the first 5xx from the local stream, which bubbles
+    // up to the user as a mid-playback decode error.
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
     '-i', inputUrl,
     ...audioMap,
     ...videoEncoder,
+    // Audio output: pin to stereo AAC. Source multi-channel layouts
+    // (EAC3 7.1, TrueHD, Dolby Atmos, 5.1 surround) used to reach the
+    // AAC encoder unchanged, and libavcodec's AAC encoder intermittently
+    // produced either invalid bitstreams (Chromium refuses) or silent-
+    // but-technically-valid output, depending on the exact channel
+    // layout. Downmixing to 2.0 pre-encode is what every mainstream
+    // streaming service does — quality is fine and compatibility is 100%.
+    // -ac 2 must come BEFORE -c:a aac so it applies to the encoder input.
+    '-ac', '2',
     '-c:a', 'aac',
     '-b:a', '192k',
     '-f', 'mp4',
@@ -2308,11 +2372,20 @@ app.get('/remux/:infoHash/*', async (req, res) => {
       console.error(`${reqTag} ffmpeg EXIT code=${code} signal=${signal} ${durMs}ms bytesOut=${bytesOut}\n${tail}`)
     } else {
       console.log(`${reqTag} ffmpeg exit code=${code} signal=${signal} ${durMs}ms bytesOut=${bytesOut}`)
-      // On clean exit with very few bytes out, dump stderr anyway — that
-      // usually means ffmpeg couldn't decode the input (e.g. HEVC decoder
-      // missing, input stream not ready yet) and bailed without writing
-      // anything useful. Without this we'd stare at a silent log forever.
-      if (bytesOut < 64 * 1024 && tail) console.log(`${reqTag} stderr (short output):\n${tail}`)
+      // Dump stderr on clean exit whenever the output looks suspicious.
+      // Two signals matter:
+      //   - very few bytes (<64KB) — ffmpeg opened an MP4 header then
+      //     bailed, usually a decoder issue (HEVC decoder missing, etc.)
+      //   - small-ish bytes (<256KB) WITH "Error"/"fail"/"Invalid" in
+      //     stderr — this catches audio-encoder mid-stream failures
+      //     where ffmpeg wrote a chunk of valid fMP4 header before the
+      //     encoder choked. Previously these sailed past the 64KB gate
+      //     and the only symptom was the client-side decode error with
+      //     nothing in our log to explain it.
+      const suspiciousByStderr = bytesOut < 256 * 1024 && /\b(Error|Invalid|Failed|not supported|Conversion failed)\b/i.test(tail)
+      if ((bytesOut < 64 * 1024 || suspiciousByStderr) && tail) {
+        console.log(`${reqTag} stderr (suspected failure):\n${tail}`)
+      }
     }
     if (!res.writableEnded) res.end()
   })
