@@ -4713,6 +4713,21 @@ function App() {
     // progress the moment it loads (we read it back in the
     // `loadedmetadata` handler to shift the UI's time axis).
     remuxTimeOffsetRef.current = Math.max(0, Math.floor(clamped))
+    // Mute the decode-error ladder during the player teardown +
+    // rebuild window. Without this guard, the old player fires
+    // error code 4 during dispose (pending fetch got cancelled,
+    // browser surfaces it as MEDIA_ERR_SRC_NOT_SUPPORTED) and the
+    // error handler escalates → wipes our fresh ?t= from the URL
+    // → show restarts from 0. The 2-second auto-clear below is a
+    // safety net in case setSource throws before mount.
+    seekReloadPendingRef.current = true
+    setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
+    // Reset the remux escalation counter so a real decode error on
+    // the new segment gets fresh chances to escalate. Without this,
+    // a user who had already cascaded to stage 2 once per stream
+    // would get permanently stuck in the "give up" state after a
+    // single subsequent seek.
+    remuxFallbackRef.current = 0
     const reloaded = `${base}?${qs.toString()}`
     setSource(reloaded)
     setStreamBaseUrl(base)
@@ -4721,6 +4736,13 @@ function App() {
   const handleAudioChange = useCallback((audioIdx) => {
     if (!streamInfoHash) return
     setActiveAudioIdx(audioIdx)
+    // Reset the remux-escalation counter AND clear any pending seek-
+    // reload guard. An audio track switch is a fresh start — the old
+    // stream's escalation history shouldn't limit the new stream's
+    // error recovery, and a leftover seekReloadPendingRef would make
+    // the error handler ignore a real decode error on the new URL.
+    remuxFallbackRef.current = 0
+    seekReloadPendingRef.current = false
     const currentPos = playerRef.current && !playerRef.current.isDisposed()
       ? playerRef.current.currentTime() || 0
       : 0
