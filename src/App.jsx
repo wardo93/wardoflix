@@ -4023,7 +4023,22 @@ function App() {
       const cur = (() => { try { return player.currentTime() } catch { return 0 } })()
       const offset = remuxTimeOffsetRef.current || 0
       const absPos = cur + offset
-      const reachedEnd = realDuration > 0 && (absPos >= realDuration - 8 || cur >= realDuration - 8)
+      // If we have a real (ffprobe) duration, gate on proximity to it.
+      // If we DON'T (probe failed → realDuration is 0), gate on the
+      // PLAYER's own duration as a fallback — but only when it's a
+      // sane number (not Infinity, not NaN, not 0). Without this,
+      // probe-failed TV episodes were auto-jumping to the next ep
+      // because reachedEnd defaulted to false → the !reachedEnd
+      // path was taken → guard skipped because "no real duration"
+      // logic was inverted in some readings.
+      const playerDur = (() => {
+        try {
+          const d = player.duration?.()
+          return Number.isFinite(d) && d > 60 ? d : 0
+        } catch { return 0 }
+      })()
+      const refDur = realDuration > 0 ? realDuration : playerDur
+      const reachedEnd = refDur > 0 && (absPos >= refDur - 8 || cur >= refDur - 8)
       const playedLongEnough = elapsedSec > 60
       if (!reachedEnd || !playedLongEnough) {
         // Fragmented-MP4 false alarm — ignore and let the player keep
@@ -4623,33 +4638,40 @@ function App() {
           setStreamBaseUrl(data.isRemuxed ? abs : null)
           startProgress(abs)
 
-          // ── Peer watchdog ────────────────────────────────────────
-          // Even after /api/stream returns 200 (torrent is "ready" and
-          // we have a file list), the swarm can still be too thin to
-          // actually send bytes. Watch the SSE progress: if no peers
-          // appeared within the timeout AND nothing downloaded, the
-          // torrent is dead in all but name and we move to the next.
+          // ── Stream-liveness watchdog ─────────────────────────────
           //
-          // Tuning notes:
-          //  - 15s was too aggressive. Trackers (especially OpenBitTorrent
-          //    and PublicBT mirrors) take 10-20s to respond on cold-cache
-          //    swarms; if even one tracker is slow we'd kill a perfectly
-          //    healthy 1-seeder torrent before it had a chance.
-          //  - Bumped to 30s. Same fast-path exit (any peer or any byte
-          //    short-circuits the wait), so healthy torrents still feel
-          //    instant. Only thin-but-alive swarms pay the extra 15s.
-          //  - Tolerance widened: peers > 0 OR bytes > 0 means alive.
-          //    A torrent that briefly saw 1 peer that disconnected is
-          //    still worth keeping (the peer might come back, or DHT
-          //    might find another).
-          const WATCHDOG_MS = 30000
+          // Authoritative liveness signal: the VIDEO ELEMENT itself.
+          // If Chromium fires `loadeddata` or `playing`, bytes have been
+          // decoded — the stream is unambiguously alive regardless of
+          // what SSE says about peer counts. SSE is kept as a secondary
+          // signal but is no longer required.
+          //
+          // Why the rewrite: prior versions relied solely on SSE
+          // (`progress.peers > 0 || progress.downloaded > 0`). Whenever
+          // the SSE channel buffered, errored, or just took its sweet
+          // time to deliver the first message, the watchdog killed
+          // perfectly working streams at the timeout. The user reported
+          // seeing the stream play for 16-30s before being switched
+          // out — that's the player decoding bytes (working!) while
+          // SSE silently died (irrelevant!).
+          //
+          // New logic — ALIVE if ANY of:
+          //   - video element fires 'loadeddata' (data buffered, decoder
+          //     ready)
+          //   - video element fires 'playing'
+          //   - video element fires 'progress' (HTMLMediaElement event:
+          //     buffered range expanded)
+          //   - SSE reports peers > 0
+          //   - SSE reports downloaded > 0
+          //   - HEAD probe to /remux URL succeeds with 200/206 + body
+          //
+          // DEAD only when 45s elapsed AND none of the above ever fired.
+          const WATCHDOG_MS = 45000
           const deadChain = await new Promise((resolve) => {
             let decided = false
-            const decide = (dead, why) => {
+            const liveBy = (signal) => {
               if (decided) return
               decided = true
-              // Log every watchdog decision so we can tell from a screenshot
-              // of the log whether the SSE/peer detection is working.
               try {
                 const p = streamProgressRef.current
                 fetch('/api/debug-log', {
@@ -4657,32 +4679,75 @@ function App() {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     tag: 'watchdog',
-                    msg: `decide(dead=${dead}, why=${why}) progress=${JSON.stringify(p)}`,
+                    msg: `alive via ${signal} progress=${JSON.stringify(p)}`,
                   }),
                 }).catch(() => {})
               } catch {}
-              resolve(dead)
+              cleanup()
+              resolve(false) // not dead
             }
-            const watchdog = setTimeout(() => {
-              const p = streamProgressRef.current
-              const peers = p?.peers || 0
-              const bytes = p?.downloaded || 0
-              const peakPeers = p?.peakPeers || peers
-              decide(peakPeers === 0 && bytes === 0, 'timeout')
-            }, WATCHDOG_MS)
-            const abortId = setInterval(() => {
-              if (!streamAliveRef.current) {
-                clearTimeout(watchdog); clearInterval(abortId); decide(false, 'aborted')
-              }
-            }, 500)
-            const poll = setInterval(() => {
+            const declareDead = (why) => {
+              if (decided) return
+              decided = true
+              try {
+                const p = streamProgressRef.current
+                fetch('/api/debug-log', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    tag: 'watchdog',
+                    msg: `DEAD why=${why} progress=${JSON.stringify(p)}`,
+                  }),
+                }).catch(() => {})
+              } catch {}
+              cleanup()
+              resolve(true)
+            }
+
+            // Hook the video element directly. The player might not be
+            // mounted yet (the source effect runs asynchronously after
+            // setSource), so we poll for it briefly.
+            const playerEvents = ['loadeddata', 'playing', 'progress', 'canplay']
+            let attachedPlayer = null
+            const onPlayerSignal = (ev) => liveBy(`video.${ev}`)
+            const handlerByEvent = {}
+            for (const ev of playerEvents) handlerByEvent[ev] = () => onPlayerSignal(ev)
+
+            const tryAttachPlayer = () => {
+              const p = playerRef.current
+              if (!p || p.isDisposed?.() || attachedPlayer) return
+              try {
+                for (const ev of playerEvents) p.on(ev, handlerByEvent[ev])
+                attachedPlayer = p
+              } catch {}
+            }
+            const playerAttachId = setInterval(tryAttachPlayer, 200)
+            tryAttachPlayer() // try immediately
+
+            const ssePoll = setInterval(() => {
               const p = streamProgressRef.current
               if ((p?.peers || 0) > 0 || (p?.downloaded || 0) > 0) {
-                if (p && (p.peers || 0) > (p.peakPeers || 0)) p.peakPeers = p.peers
-                clearTimeout(watchdog); clearInterval(abortId); clearInterval(poll); decide(false, 'fast-exit')
+                liveBy('sse')
               }
             }, 500)
-            setTimeout(() => { clearInterval(abortId); clearInterval(poll) }, WATCHDOG_MS + 1000)
+
+            const abortPoll = setInterval(() => {
+              if (!streamAliveRef.current) liveBy('aborted')
+            }, 500)
+
+            const wd = setTimeout(() => declareDead('timeout-45s'), WATCHDOG_MS)
+
+            function cleanup() {
+              try { clearTimeout(wd) } catch {}
+              try { clearInterval(ssePoll) } catch {}
+              try { clearInterval(abortPoll) } catch {}
+              try { clearInterval(playerAttachId) } catch {}
+              if (attachedPlayer) {
+                try {
+                  for (const ev of playerEvents) attachedPlayer.off(ev, handlerByEvent[ev])
+                } catch {}
+              }
+            }
           })
 
           if (deadChain && i < queue.length - 1) {

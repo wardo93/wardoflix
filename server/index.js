@@ -350,6 +350,19 @@ app.post('/api/stream/dead', (req, res) => {
     if (tmr) { clearTimeout(tmr); torrentTimers.delete(hash) }
     t.destroy({ destroyStore: false })
     try { REMUX_META?.delete(hash) } catch {}
+    // Force-kill any ffmpeg processes currently transcoding this torrent
+    // so they don't keep CPU pinned for the 5s SIGTERM grace window.
+    try {
+      const procs = global.__ffmpegByHash?.get(hash)
+      if (procs) {
+        for (const p of procs) {
+          try { p.stdout?.destroy() } catch {}
+          try { p.stderr?.destroy() } catch {}
+          try { p.kill('SIGKILL') } catch {}
+        }
+        procs.clear()
+      }
+    } catch {}
     console.log(`[stream/dead] removed ${hash.slice(0, 8)} (cache files kept)`)
     res.json({ ok: true, removed: true })
   } catch (e) {
@@ -1902,11 +1915,13 @@ app.get('/api/stream/progress/:infoHash', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
-  // Tell any intermediate proxy/middleware not to buffer this response.
-  // Nginx honours X-Accel-Buffering; some other proxies use this header
-  // too. Even though we're behind only Express here, this is the canonical
-  // SSE-survives-proxies header and costs nothing.
   res.setHeader('X-Accel-Buffering', 'no')
+  // Set CORS explicitly on the SSE response. cors() middleware should
+  // be doing this already, but EventSource cross-origin from file://
+  // origin (packaged Electron) is fussy and we want to be 100% certain
+  // the browser doesn't drop the connection silently.
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Headers', 'Cache-Control')
   res.flushHeaders()
   // Disable Nagle — SSE wants every write on the wire immediately, no
   // batching. Without this, Node's TCP socket can hold up to ~200ms of
@@ -2413,6 +2428,14 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   console.log(`${reqTag} args: ${ffmpegArgs.join(' ')}`)
   const ffmpegStartedAt = Date.now()
   const ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+  // Track every live ffmpeg process by infoHash so /api/stream/dead can
+  // kill it directly. Without this, when the client gives up on a slow
+  // candidate the ffmpeg process keeps reading from WebTorrent for up
+  // to 5 more seconds (until req.close fires), hogging CPU and tripping
+  // the torrent-cleanup. Forced-kill from /stream/dead is much cleaner.
+  if (!global.__ffmpegByHash) global.__ffmpegByHash = new Map()
+  if (!global.__ffmpegByHash.has(hash)) global.__ffmpegByHash.set(hash, new Set())
+  global.__ffmpegByHash.get(hash).add(ffmpeg)
 
   // Count bytes piped to the client so we can tell at a glance whether
   // ffmpeg produced anything at all before the client disconnected.
@@ -2455,6 +2478,9 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   ffmpeg.on('error', (err) => { console.error(`${reqTag} ffmpeg spawn error: ${err.message}`); cleanup() })
   ffmpeg.on('exit', (code, signal) => {
     const durMs = Date.now() - ffmpegStartedAt
+    // Drop from the per-hash registry so /stream/dead doesn't try to
+    // double-kill an already-exited process.
+    try { global.__ffmpegByHash?.get(hash)?.delete(ffmpeg) } catch {}
     // Log EVERY exit, not just errors. Silent success (code=0/255 from
     // SIGTERM on client disconnect) was hiding diagnostics — if Chromium
     // rejects ffmpeg's output mid-stream, ffmpeg itself exits cleanly,
@@ -2691,6 +2717,10 @@ app.use((err, req, res, next) => {
 // when IPv6 is disabled; being explicit avoids that class of bug.
 const apiServer = app.listen(API_PORT, '0.0.0.0', () => {
   console.log(`API server: http://localhost:${API_PORT} (LAN: http://${getLanIp()}:${API_PORT})`)
+  // Stamp the running version into the log on every startup. Lets us
+  // cross-reference "user reports bug X" with "which version was
+  // actually running when X happened" without guessing.
+  console.log(`[boot] WardoFlix server v${APP_VERSION}`)
 })
 apiServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
