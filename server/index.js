@@ -204,27 +204,19 @@ function pruneCache() {
 }
 
 // ── WebTorrent ──────────────────────────────────────────────────
-// WebTorrent client tuned for tough networks:
-//   - tracker: pass the global tracker list so every torrent gets it
-//     even if the source magnet didn't list any
-//   - dht: true is default but make it explicit; DHT can find peers
-//     when trackers are blocked or dead
-//   - utp: enable µTP fallback (BitTorrent's UDP-based reliable transport)
-//     — sometimes survives when raw UDP is throttled
-//   - lsd: Local Service Discovery — finds peers on the same LAN
-//     (zero-hop, instant, no internet required)
-const client = new WebTorrent({
-  tracker: { announce: TRACKERS },
-  dht: true,
-  utp: true,
-  lsd: true,
-})
+// REVERTED in 1.5.11: passing tracker / lsd / utp config to the
+// WebTorrent constructor broke streaming entirely for some users
+// (suspected: WSS tracker init failure on the server, or LSD
+// requiring multicast UDP permissions Windows desktops don't have).
+// The bare `new WebTorrent()` worked reliably for months — sticking
+// with it. The expanded TRACKERS list and addTrackers always-merge
+// fix from 1.5.10 are kept (those just add more URLs to magnets,
+// no client-level config touched).
+const client = new WebTorrent()
 const wtServer = client.createServer({ pathname: '/stream' })
 
-// Surface client-level errors so a failed UDP socket bind, etc., shows
-// up in the log instead of dying silently. Without this, listener-leak
-// warnings and tracker errors went straight to stderr where they got
-// truncated.
+// Surface client-level errors so future regressions of this kind
+// aren't silent. Pure-listener; doesn't change behaviour.
 client.on('error', (err) => console.error('[webtorrent client]', err?.message || err))
 client.on('warning', (warn) => console.warn('[webtorrent warning]', warn?.message || warn))
 
