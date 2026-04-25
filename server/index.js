@@ -291,6 +291,15 @@ app.use(compression({
   filter: (req, res) => {
     const u = req.url || ''
     if (u.startsWith('/stream') || u.startsWith('/remux') || u.startsWith('/trailer')) return false
+    // Server-Sent Events MUST NOT be gzipped. Compression buffers
+    // chunks until a threshold is reached before emitting; SSE needs
+    // each message to flush immediately. With gzip on, the renderer's
+    // EventSource opens, the server writes data, gzip holds the chunks
+    // in its buffer waiting for more bytes, and the watchdog times out
+    // 30s later having received zero messages even though peers existed
+    // and bytes flowed via /remux. This was the root cause of "stream
+    // works, then auto-switches at 30s" — the SSE was silently buffered.
+    if (u.startsWith('/api/stream/progress')) return false
     return compression.filter(req, res)
   },
 }))
@@ -1893,7 +1902,17 @@ app.get('/api/stream/progress/:infoHash', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
+  // Tell any intermediate proxy/middleware not to buffer this response.
+  // Nginx honours X-Accel-Buffering; some other proxies use this header
+  // too. Even though we're behind only Express here, this is the canonical
+  // SSE-survives-proxies header and costs nothing.
+  res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders()
+  // Disable Nagle — SSE wants every write on the wire immediately, no
+  // batching. Without this, Node's TCP socket can hold up to ~200ms of
+  // packets before flushing, which compounds with any other buffering
+  // in the stack to make watchdog timing flakier.
+  try { req.socket?.setNoDelay(true) } catch {}
 
   if (!torrent) {
     res.write(`data: ${JSON.stringify({ error: 'Torrent not found' })}\n\n`)
