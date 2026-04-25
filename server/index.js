@@ -288,6 +288,30 @@ app.post('/api/debug-log', express.json({ limit: '8kb' }), (req, res) => {
   res.status(204).end()
 })
 
+// Explicit cleanup for a torrent the client gave up on. Without this
+// the auto-prune (TORRENT_TTL = 2h) keeps dead torrents around hogging
+// bandwidth + memory long after the user moved on. The fallback chain
+// in handleStream calls this whenever the peer-watchdog fires.
+app.post('/api/stream/dead', (req, res) => {
+  const hash = String(req.body?.infoHash || '').toLowerCase()
+  if (!/^[a-f0-9]{40}$/.test(hash)) return res.status(400).json({ error: 'Invalid infoHash' })
+  const t = client.torrents.find((tr) => String(tr.infoHash || '').toLowerCase() === hash)
+  if (!t) return res.json({ ok: true, removed: false })
+  try {
+    // Cancel any pending TTL timer first, otherwise the timeout fires
+    // later and tries to destroy() an already-destroyed torrent (which
+    // throws inside webtorrent and emits an unhandled rejection).
+    const tmr = torrentTimers.get(hash)
+    if (tmr) { clearTimeout(tmr); torrentTimers.delete(hash) }
+    t.destroy({ destroyStore: false })
+    try { REMUX_META?.delete(hash) } catch {}
+    console.log(`[stream/dead] removed ${hash.slice(0, 8)} (cache files kept)`)
+    res.json({ ok: true, removed: true })
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'destroy failed' })
+  }
+})
+
 // ── Helper: TMDB fetch (in-memory cache + retry) ────────────────
 // In-memory cache stops the Browse page from blanking out when the user
 // returns from streaming — the TMDB API can be slow/rate-limited while
@@ -1702,6 +1726,9 @@ app.post('/api/stream', (req, res) => {
   if (!magnet || !String(magnet).trim().toLowerCase().startsWith('magnet:')) {
     return res.status(400).json({ error: 'Invalid magnet link' })
   }
+  // Drop the touchTorrent timer immediately so a failed-to-connect
+  // torrent doesn't sit around for 2h burning bandwidth. The /api/stream
+  // success path re-touches it later, so live torrents stay alive.
   const pickOpts = {
     fileIdx: Number.isInteger(fileIdx) ? fileIdx : undefined,
     season: Number.isInteger(season) ? season : (Number.isFinite(parseInt(season)) ? parseInt(season) : undefined),

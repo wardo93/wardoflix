@@ -4511,8 +4511,14 @@ function App() {
         // silence doesn't feel like the app froze.
         if (i > 0) {
           const q = candidate.quality || 'source'
-          const s = typeof candidate.seeds === 'number' ? ` · ${candidate.seeds} seeds` : ''
-          setStreamWarning(`Previous source had no seeders. Trying source ${i + 1} of ${queue.length} (${q}${s})…`)
+          const s = typeof candidate.seeds === 'number' ? ` · ${candidate.seeds} listed seeds` : ''
+          // Don't say "no seeders" — that's a half-truth; the source may
+          // have seeders but we couldn't reach them within the timeout
+          // window. Saying "no peers reached" is more accurate and
+          // doesn't make the user mistrust the seeder counts (which
+          // are coming from Torrentio's tracker scrape and are usually
+          // correct, just stale or unreachable from this network).
+          setStreamWarning(`Couldn't reach peers on the previous source. Trying ${i + 1} of ${queue.length} (${q}${s})…`)
         }
         try {
           const res = await fetch('/api/stream', {
@@ -4555,9 +4561,23 @@ function App() {
           // ── Peer watchdog ────────────────────────────────────────
           // Even after /api/stream returns 200 (torrent is "ready" and
           // we have a file list), the swarm can still be too thin to
-          // actually send video bytes. Watch the SSE progress for 15s:
-          // if peers and downloaded both stay at 0, the torrent is dead
-          // in all but name — kill it and try the next alternative.
+          // actually send bytes. Watch the SSE progress: if no peers
+          // appeared within the timeout AND nothing downloaded, the
+          // torrent is dead in all but name and we move to the next.
+          //
+          // Tuning notes:
+          //  - 15s was too aggressive. Trackers (especially OpenBitTorrent
+          //    and PublicBT mirrors) take 10-20s to respond on cold-cache
+          //    swarms; if even one tracker is slow we'd kill a perfectly
+          //    healthy 1-seeder torrent before it had a chance.
+          //  - Bumped to 30s. Same fast-path exit (any peer or any byte
+          //    short-circuits the wait), so healthy torrents still feel
+          //    instant. Only thin-but-alive swarms pay the extra 15s.
+          //  - Tolerance widened: peers > 0 OR bytes > 0 means alive.
+          //    A torrent that briefly saw 1 peer that disconnected is
+          //    still worth keeping (the peer might come back, or DHT
+          //    might find another).
+          const WATCHDOG_MS = 30000
           const deadChain = await new Promise((resolve) => {
             let decided = false
             const decide = (dead) => { if (decided) return; decided = true; resolve(dead) }
@@ -4565,29 +4585,43 @@ function App() {
               const p = streamProgressRef.current
               const peers = p?.peers || 0
               const bytes = p?.downloaded || 0
-              decide(peers === 0 && bytes === 0)
-            }, 15000)
-            // If the user navigates away or picks something else, bail.
+              const peakPeers = streamProgressRef.current?.peakPeers || peers
+              decide(peakPeers === 0 && bytes === 0)
+            }, WATCHDOG_MS)
             const abortId = setInterval(() => {
               if (!streamAliveRef.current) {
                 clearTimeout(watchdog); clearInterval(abortId); decide(false)
               }
             }, 500)
-            // Fast-path exit: peers appeared before the timeout, no point
-            // waiting the full 15s.
             const poll = setInterval(() => {
               const p = streamProgressRef.current
               if ((p?.peers || 0) > 0 || (p?.downloaded || 0) > 0) {
+                // Track peak peers so a brief connection counts as "alive"
+                // even if all peers later disconnected. Avoids killing a
+                // torrent that just had bad luck mid-watchdog.
+                if (p && (p.peers || 0) > (p.peakPeers || 0)) p.peakPeers = p.peers
                 clearTimeout(watchdog); clearInterval(abortId); clearInterval(poll); decide(false)
               }
             }, 500)
-            // Safety net
-            setTimeout(() => { clearInterval(abortId); clearInterval(poll) }, 16000)
+            setTimeout(() => { clearInterval(abortId); clearInterval(poll) }, WATCHDOG_MS + 1000)
           })
 
           if (deadChain && i < queue.length - 1) {
             // Try the next source. Clean up this attempt first.
             if (progressRef.current) { progressRef.current.close(); progressRef.current = null }
+            // Tell the server to destroy the dead torrent immediately
+            // instead of letting it sit around for the 2h auto-prune.
+            // Otherwise after 8 dead candidates we have 8 zombie torrents
+            // each retrying tracker/DHT — wasteful and counts toward our
+            // own outbound bandwidth budget.
+            const deadHash = data?.infoHash
+            if (deadHash) {
+              fetch('/api/stream/dead', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ infoHash: deadHash }),
+              }).catch(() => {})
+            }
             setSource(null)
             setSourceType(null)
             setStreamInfoHash(null)
@@ -4680,7 +4714,7 @@ function App() {
       if (!success) {
         setError(
           queue.length > 1
-            ? `Couldn't stream any of ${queue.length} sources (all had no seeders). Try again in a minute — trackers may have been rate-limited.`
+            ? `None of ${queue.length} sources connected within ${30}s each. Either your network is blocking BitTorrent (firewall/ISP), or the swarms are genuinely cold right now. Try a different title or wait a few minutes.`
             : (lastErr?.message || 'Stream failed')
         )
       }
