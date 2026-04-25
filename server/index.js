@@ -80,7 +80,19 @@ function logThrottled(level, key, msg) {
 }
 
 // Well-known trackers for reliable peer discovery
+// Tracker mix: UDP + HTTPS + WSS. Belgian ISPs (and many corporate
+// networks) silently drop outbound UDP on non-standard ports, which
+// turns "all my torrents have 1 seed but I can't connect to any of
+// them" into the most common failure mode. Mixing protocols means at
+// least one channel survives most network policies:
+//   - UDP   : fastest when allowed (most efficient announce protocol)
+//   - HTTPS : slower but rides on port 443 alongside web traffic; no
+//             firewall blocks 443 outbound
+//   - WSS   : WebSocket-secure trackers; WebTorrent's WebRTC hybrid
+//             uses these to find browser peers AND, on node, can use
+//             them as a tracker hint when UDP is blocked
 const TRACKERS = [
+  // UDP first (fastest, when network allows)
   'udp://open.stealth.si:80/announce',
   'udp://tracker.opentrackr.org:1337/announce',
   'udp://exodus.desync.com:6969/announce',
@@ -91,13 +103,24 @@ const TRACKERS = [
   'udp://explodie.org:6969/announce',
   'udp://tracker.tiny-vps.com:6969/announce',
   'udp://tracker1.bt.moack.co.kr:80/announce',
+  // HTTPS — survives UDP-blocking firewalls (port 443)
+  'https://tracker.tamersunion.org:443/announce',
+  'https://tracker.gbitt.info:443/announce',
+  'https://tracker1.520.jp:443/announce',
+  // WSS — WebTorrent native, works through the strictest firewalls
+  'wss://tracker.openwebtorrent.com',
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.files.fm:7073/announce',
 ]
 const TRACKER_PARAMS = TRACKERS.map((t) => `&tr=${encodeURIComponent(t)}`).join('')
 
 function addTrackers(magnet) {
   if (!magnet) return magnet
-  // Don't double-add if it already has trackers
-  if (/&tr=/i.test(magnet)) return magnet
+  // Always merge our tracker list — the magnet's existing trackers are
+  // often a single dead Torrentio-suggested URL or a tracker:host:port
+  // hint that doesn't actually work. Adding ours alongside (rather
+  // than skipping) means the swarm has a chance regardless. The
+  // BitTorrent protocol deduplicates by announce URL automatically.
   return magnet + TRACKER_PARAMS
 }
 
@@ -181,8 +204,29 @@ function pruneCache() {
 }
 
 // ── WebTorrent ──────────────────────────────────────────────────
-const client = new WebTorrent()
+// WebTorrent client tuned for tough networks:
+//   - tracker: pass the global tracker list so every torrent gets it
+//     even if the source magnet didn't list any
+//   - dht: true is default but make it explicit; DHT can find peers
+//     when trackers are blocked or dead
+//   - utp: enable µTP fallback (BitTorrent's UDP-based reliable transport)
+//     — sometimes survives when raw UDP is throttled
+//   - lsd: Local Service Discovery — finds peers on the same LAN
+//     (zero-hop, instant, no internet required)
+const client = new WebTorrent({
+  tracker: { announce: TRACKERS },
+  dht: true,
+  utp: true,
+  lsd: true,
+})
 const wtServer = client.createServer({ pathname: '/stream' })
+
+// Surface client-level errors so a failed UDP socket bind, etc., shows
+// up in the log instead of dying silently. Without this, listener-leak
+// warnings and tracker errors went straight to stderr where they got
+// truncated.
+client.on('error', (err) => console.error('[webtorrent client]', err?.message || err))
+client.on('warning', (warn) => console.warn('[webtorrent warning]', warn?.message || warn))
 
 // Encode a torrent-relative file path for WebTorrent's internal HTTP
 // server. Crucially, we must use encodeURI per segment, NOT
