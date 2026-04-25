@@ -3652,6 +3652,11 @@ function App() {
   const [activeAudioIdx, setActiveAudioIdx] = useState(null)
   const [streamInfoHash, setStreamInfoHash] = useState(null)
   const [streamDuration, setStreamDuration] = useState(null)
+  // Mirror streamDuration into a ref so the player's 'ended' handler
+  // (registered once per source) can read the latest value without
+  // closure staleness.
+  const streamDurationRef = useRef(null)
+  useEffect(() => { streamDurationRef.current = streamDuration }, [streamDuration])
   const [streamBaseUrl, setStreamBaseUrl] = useState(null)
   const [playbackError, setPlaybackError] = useState(null) // { code, message } | null — surfaced when video.js emits 'error' mid-playback
   // Probed video codec reported by /api/tracks (e.g. 'h264', 'hevc', 'av1').
@@ -3992,10 +3997,52 @@ function App() {
     // is invoked by PlayerControls BEFORE the native seek fires.)
 
     // ── Autoplay next episode when current one finishes ─────────
+    //
+    // Guard against premature 'ended' events. ffmpeg's fragmented-MP4
+    // output (frag_keyframe + empty_moov) carries no master duration in
+    // the moov box; each fragment contributes its own. video.js can
+    // briefly read duration === currentTime in the gap between fragments
+    // arriving and fire 'ended' even though the movie is nowhere near
+    // over. Without this guard, TV episodes would auto-jump to the next
+    // episode 10-20s in (which the user saw as "the stream jumps to the
+    // next torrent" because handleStream re-runs the fallback chain).
+    //
+    // Real-end criteria, ALL must hold:
+    //   1. We've been playing for at least 60s — protects against the
+    //      first-fragment race entirely.
+    //   2. The player's reported currentTime is within 8s of the
+    //      ffprobe-reported duration (which is the AUTHORITATIVE total,
+    //      not the remux output's stutter-prone duration).
+    //   3. The remux time offset + currentTime is also within 8s of the
+    //      ffprobe duration, in case the user seeked.
+    const playStartTs = Date.now()
     player.on('ended', () => {
       const meta = playingMetadataRef.current
-      // Finished — drop any saved resume mark, flip the watched flag so
-      // the episode list shows a ✓, then chain into the next episode.
+      const elapsedSec = (Date.now() - playStartTs) / 1000
+      const realDuration = streamDurationRef.current || 0
+      const cur = (() => { try { return player.currentTime() } catch { return 0 } })()
+      const offset = remuxTimeOffsetRef.current || 0
+      const absPos = cur + offset
+      const reachedEnd = realDuration > 0 && (absPos >= realDuration - 8 || cur >= realDuration - 8)
+      const playedLongEnough = elapsedSec > 60
+      if (!reachedEnd || !playedLongEnough) {
+        // Fragmented-MP4 false alarm — ignore and let the player keep
+        // streaming. Logged via the local debug-log endpoint so we
+        // can see this happening if a user complains.
+        try {
+          fetch('/api/debug-log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tag: 'ended-guard',
+              msg: `ignored 'ended' — elapsed=${elapsedSec.toFixed(0)}s cur=${cur.toFixed(1)} offset=${offset} realDur=${realDuration} reachedEnd=${reachedEnd} playedLongEnough=${playedLongEnough}`,
+            }),
+          }).catch(() => {})
+        } catch {}
+        return
+      }
+      // Genuine end-of-show — clear resume mark, flag watched, queue
+      // the next episode.
       try { clearResumePosition(meta) } catch {}
       try { markWatched(meta) } catch {}
       const next = findNextEpisode(meta)

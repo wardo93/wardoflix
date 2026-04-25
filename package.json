@@ -2,7 +2,7 @@
   "name": "wardoflix",
   "productName": "WardoFlix",
   "private": true,
-  "version": "1.5.11",
+  "version": "1.5.12",
   "description": "WardoFlix — a premium streaming client",
   "author": "WardoFlix",
   "main": "electron/main.js",
