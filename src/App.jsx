@@ -4436,21 +4436,39 @@ function App() {
   }, [dlnaActive])
 
   const startProgress = useCallback((url) => {
-    // Extract infoHash from stream URL like /stream/HASH/... or /remux/HASH/...
     const match = url?.match(/\/(?:stream|remux)\/([a-f0-9]{40})\//i)
-    if (!match) return
+    const dbg = (msg) => fetch('/api/debug-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag: 'sse', msg }),
+    }).catch(() => {})
+    if (!match) { dbg(`no hash match in url: ${url?.slice(0, 120)}`); return }
     if (progressRef.current) progressRef.current.close()
     streamProgressRef.current = null
-    const es = new EventSource(`/api/stream/progress/${match[1]}`)
-    progressRef.current = es
-    es.onmessage = (e) => {
-      try {
-        const d = JSON.parse(e.data)
-        streamProgressRef.current = d
-        setStreamProgress(d)
-      } catch {}
+    let firstMessage = true
+    try {
+      const es = new EventSource(`/api/stream/progress/${match[1]}`)
+      progressRef.current = es
+      dbg(`opened ${match[1].slice(0, 8)}`)
+      es.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          streamProgressRef.current = d
+          setStreamProgress(d)
+          if (firstMessage) {
+            firstMessage = false
+            dbg(`first msg ${match[1].slice(0, 8)}: peers=${d.peers} dl=${d.downloaded} ready=${d.ready}`)
+          }
+        } catch {}
+      }
+      es.onerror = (e) => {
+        dbg(`error ${match[1].slice(0, 8)}: readyState=${es.readyState}`)
+        es.close()
+        progressRef.current = null
+      }
+    } catch (e) {
+      dbg(`constructor threw: ${e?.message || String(e)}`)
     }
-    es.onerror = () => { es.close(); progressRef.current = null }
   }, [])
 
   const handleStream = async (urlOrMagnet, metadata) => {
@@ -4627,27 +4645,41 @@ function App() {
           const WATCHDOG_MS = 30000
           const deadChain = await new Promise((resolve) => {
             let decided = false
-            const decide = (dead) => { if (decided) return; decided = true; resolve(dead) }
+            const decide = (dead, why) => {
+              if (decided) return
+              decided = true
+              // Log every watchdog decision so we can tell from a screenshot
+              // of the log whether the SSE/peer detection is working.
+              try {
+                const p = streamProgressRef.current
+                fetch('/api/debug-log', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    tag: 'watchdog',
+                    msg: `decide(dead=${dead}, why=${why}) progress=${JSON.stringify(p)}`,
+                  }),
+                }).catch(() => {})
+              } catch {}
+              resolve(dead)
+            }
             const watchdog = setTimeout(() => {
               const p = streamProgressRef.current
               const peers = p?.peers || 0
               const bytes = p?.downloaded || 0
-              const peakPeers = streamProgressRef.current?.peakPeers || peers
-              decide(peakPeers === 0 && bytes === 0)
+              const peakPeers = p?.peakPeers || peers
+              decide(peakPeers === 0 && bytes === 0, 'timeout')
             }, WATCHDOG_MS)
             const abortId = setInterval(() => {
               if (!streamAliveRef.current) {
-                clearTimeout(watchdog); clearInterval(abortId); decide(false)
+                clearTimeout(watchdog); clearInterval(abortId); decide(false, 'aborted')
               }
             }, 500)
             const poll = setInterval(() => {
               const p = streamProgressRef.current
               if ((p?.peers || 0) > 0 || (p?.downloaded || 0) > 0) {
-                // Track peak peers so a brief connection counts as "alive"
-                // even if all peers later disconnected. Avoids killing a
-                // torrent that just had bad luck mid-watchdog.
                 if (p && (p.peers || 0) > (p.peakPeers || 0)) p.peakPeers = p.peers
-                clearTimeout(watchdog); clearInterval(abortId); clearInterval(poll); decide(false)
+                clearTimeout(watchdog); clearInterval(abortId); clearInterval(poll); decide(false, 'fast-exit')
               }
             }, 500)
             setTimeout(() => { clearInterval(abortId); clearInterval(poll) }, WATCHDOG_MS + 1000)
