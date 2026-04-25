@@ -118,7 +118,45 @@
   const HOUR = 60 * 60 * 1000
   const DAY = 24 * HOUR
 
+  // GitHub raw URL for access.json — same one every WardoFlix client
+  // fetches on launch. The dashboard reads it for the install_overrides
+  // map (owner-side per-install labels and coord overrides) without
+  // requiring the owner to edit dashboard.html.
+  const ACCESS_JSON_URL = 'https://raw.githubusercontent.com/wardo93/wardoflix/main/access.json'
+
   let map, markerLayer, records = [], filtered = [], selectedId = null
+  let installOverrides = {}
+
+  // Fetch the live access.json from GitHub raw, parse install_overrides.
+  // Cached for 60s so a refresh-spam doesn't hammer GitHub. Errors are
+  // soft — dashboard works fine without overrides, you just don't get
+  // pretty labels.
+  async function fetchOverrides() {
+    try {
+      const r = await fetch(ACCESS_JSON_URL + '?_=' + Math.floor(Date.now() / 60000), { cache: 'no-cache' })
+      if (!r.ok) return
+      const policy = await r.json()
+      installOverrides = (policy && typeof policy.install_overrides === 'object') ? policy.install_overrides : {}
+    } catch {}
+  }
+
+  // Apply owner-defined overrides on top of a record. Returns a new
+  // shallow-merged object; doesn't mutate the input.
+  function applyOverride(r) {
+    const o = installOverrides[r.installId]
+    if (!o || typeof o !== 'object') return r
+    const merged = { ...r }
+    if (typeof o.lat === 'number' && typeof o.lon === 'number') {
+      merged.lat = o.lat
+      merged.lon = o.lon
+      merged.geoSource = 'owner'
+      merged.gpsAccuracy = null
+    }
+    if (typeof o.friendlyName === 'string' && o.friendlyName.trim()) {
+      merged.friendlyName = o.friendlyName.trim()
+    }
+    return merged
+  }
 
   function bucketFor(lastSeen) {
     const age = Date.now() - lastSeen
@@ -167,7 +205,11 @@
         return
       }
       const data = await r.json()
-      records = (data.records || []).filter(r => r.installId)
+      // Refresh the override map from GitHub each refresh cycle so the
+      // dashboard reflects ACCESS_CONTROL.md edits within ~60s of a push
+      // without needing a hard reload.
+      await fetchOverrides()
+      records = (data.records || []).filter(r => r.installId).map(applyOverride)
       applyFilter()
       renderStats()
       document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString()
@@ -253,13 +295,15 @@
         fillOpacity: 0.5,
       })
       const fmtAcc = (m) => m == null ? '?' : m < 1000 ? `${m}m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)}km`
-      const geoLine = r.geoSource === 'manual'
-        ? 'Manual · exact'
-        : r.geoSource === 'gps'
-          ? `GPS · ±${fmtAcc(r.gpsAccuracy)}`
-          : r.geoError
-            ? `IP only · GPS failed: ${r.geoError}`
-            : 'IP · ~metro'
+      const geoLine = r.geoSource === 'owner'
+        ? 'Owner override'
+        : r.geoSource === 'manual'
+          ? 'Manual · exact'
+          : r.geoSource === 'gps'
+            ? `GPS · ±${fmtAcc(r.gpsAccuracy)}`
+            : r.geoError
+              ? `IP only · GPS failed: ${r.geoError}`
+              : 'IP · ~metro'
       const headerName = r.friendlyName
         ? `<div style="font-weight:600;font-size:14px">${r.friendlyName}</div>`
         : r.osUser

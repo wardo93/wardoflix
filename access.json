@@ -15,5 +15,13 @@
     "disabled": false
   },
   "_comment_google_key": "Google Maps Geolocation API key. Electron's navigator.geolocation uses Google's geolocation backend on Windows — without a key it silently fails and the dashboard pin falls back to coarse CF edge geo. With a key, GPS/WiFi-based accuracy (~50-500m). Restrict the key to only the Geolocation API in Google Cloud Console.",
-  "google_maps_api_key": "AIzaSyB8ax8a6K5lkWlgk_JwCcDQAnM8huuJvG0"
+  "google_maps_api_key": "AIzaSyB8ax8a6K5lkWlgk_JwCcDQAnM8huuJvG0",
+  "_comment_install_overrides": "Owner-side label/coords overrides keyed on install ID. Dashboard fetches this file on load and applies these on top of whatever the Worker reports. Use this to label friends precisely without making them edit anything. Example: {\"4ec68254-...\": {\"friendlyName\": \"Ward (Moerkerke)\", \"lat\": 51.2486, \"lon\": 3.3373}}. Any field omitted falls through to the live data. Coords here always win — even over manual-coords.txt — because they're owner-controlled.",
+  "install_overrides": {
+    "4ec68254-ef28-43ec-869f-90387dd3a00b": {
+      "friendlyName": "Ward (Moerkerke)",
+      "lat": 51.2486,
+      "lon": 3.3373
+    }
+  }
 }

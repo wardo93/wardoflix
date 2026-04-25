@@ -10,6 +10,28 @@ You can control who runs WardoFlix from a single file in this repo: `access.json
 - **If GitHub is unreachable**, the client uses a cached copy up to 7 days old, then fails closed.
 - **Dev builds bypass the check** (`isDev` in `electron/main.js`). Production/packaged builds enforce it.
 
+## Per-install overrides (label / pinpoint specific users)
+
+`access.json` has an `install_overrides` block keyed on install ID. The dashboard fetches this file on every refresh and applies these on top of the live data. Use it to label and precisely locate friends without making them touch any files.
+
+```json
+"install_overrides": {
+  "4ec68254-ef28-43ec-869f-90387dd3a00b": {
+    "friendlyName": "Ward (Moerkerke)",
+    "lat": 51.2486,
+    "lon": 3.3373
+  },
+  "<some-other-uuid>": {
+    "friendlyName": "Alex"
+  }
+}
+```
+
+- All fields optional. Omit `lat`/`lon` to keep using whatever the client reports (GPS / IP / manual).
+- Override coords always win — they outrank `manual-coords.txt`, GPS, and IP geo. The popup will show "Owner override".
+- `friendlyName` here outranks `userData/friendly-name.txt` and the OS username, so you control what appears in the sidebar regardless of what the client provides.
+- Push to main → dashboard refresh shows the changes within ~60s (it caches the access.json fetch for a minute).
+
 ## Collecting existing users' IDs first (the bootstrap)
 
 Before you flip `mode` to `allowlist`, you need every legitimate user's install ID, otherwise you'll lock them out. The soft rollout:
