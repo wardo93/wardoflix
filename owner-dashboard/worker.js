@@ -91,10 +91,25 @@ async function handlePing(request, env) {
   // and gives ~10m accuracy when enabled). Prefer these over CF's IP
   // geo when present. Accuracy is in metres; anything bigger than
   // 50km is probably a bad reading and we fall back to IP.
+  // Accept up to 100km accuracy. The previous 50km cutoff rejected
+  // Google's IP-fallback responses (typically 50-100km), forcing the
+  // pin back to Cloudflare's edge-POP geo — which is sometimes closer,
+  // sometimes farther. Better policy: trust whatever the client sent
+  // (GPS, WiFi, or IP-fallback) and surface the accuracy in the
+  // dashboard so the owner can see how confident the pin is.
+  // A `manualSource` flag from the client (set when manual-coords.txt
+  // override is in play) bypasses the filter — Ward's own pin should
+  // never be filtered.
   const hasGps = typeof body.lat === 'number' && typeof body.lon === 'number' &&
     body.lat >= -90 && body.lat <= 90 && body.lon >= -180 && body.lon <= 180 &&
-    (typeof body.accuracy !== 'number' || body.accuracy < 50000)
+    (body.source === 'manual' || typeof body.accuracy !== 'number' || body.accuracy < 100000)
 
+  // Distinguish source types so the dashboard can label them:
+  //   manual = user dropped manual-coords.txt with their actual location
+  //   gps    = navigator.geolocation result (accuracy varies wildly)
+  //   ip     = Cloudflare's edge-POP fallback
+  let geoSource = 'ip'
+  if (hasGps) geoSource = body.source === 'manual' ? 'manual' : 'gps'
   const geo = {
     country: cf.country || null,
     city: cf.city || null,
@@ -102,10 +117,7 @@ async function handlePing(request, env) {
     lat: hasGps ? body.lat : cfLat,
     lon: hasGps ? body.lon : cfLon,
     timezone: cf.timezone || null,
-    // Keep the locality metadata (country/city) from CF even when GPS
-    // provides the coords — CF's country code is accurate, and the GPS
-    // fix doesn't include a human-readable city name.
-    geoSource: hasGps ? 'gps' : 'ip',
+    geoSource,
     gpsAccuracy: hasGps && typeof body.accuracy === 'number' ? Math.round(body.accuracy) : null,
   }
 
@@ -159,9 +171,10 @@ async function handlePing(request, env) {
     record.city    = geo.city    || record.city
     record.region  = geo.region  || record.region
     record.timezone = geo.timezone || record.timezone
-    const incomingIsGps = geo.geoSource === 'gps'
-    const storedIsGps = record.geoSource === 'gps'
-    if (incomingIsGps || !storedIsGps) {
+    // Source ranking: manual > gps > ip. A higher-rank ping always wins;
+    // a lower-rank ping never overwrites a higher-rank stored value.
+    const rank = (s) => s === 'manual' ? 3 : s === 'gps' ? 2 : 1
+    if (rank(geo.geoSource) >= rank(record.geoSource || 'ip')) {
       record.lat = geo.lat ?? record.lat
       record.lon = geo.lon ?? record.lon
       record.geoSource = geo.geoSource || record.geoSource || 'ip'

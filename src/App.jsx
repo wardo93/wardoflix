@@ -4757,6 +4757,19 @@ function App() {
         return null
       })
 
+      // Manual coordinate override has highest priority — skip Google
+      // entirely. Useful when a user dropped manual-coords.txt because
+      // Google's geolocation gave them a useless 75km-accuracy guess.
+      if (info.manualCoords && typeof info.manualCoords.lat === 'number' && typeof info.manualCoords.lon === 'number') {
+        dbg('geo', `manual coords override: ${info.manualCoords.lat}, ${info.manualCoords.lon}`)
+        const r = await ping({
+          lat: info.manualCoords.lat,
+          lon: info.manualCoords.lon,
+          source: 'manual',
+        })
+        dbg('geo', 'worker ping (manual) response: ' + (r?.status || 'network-error'))
+        return
+      }
       if (!navigator.geolocation) {
         dbg('geo', 'no navigator.geolocation object')
         const r = await ping({ geoError: 'no navigator.geolocation' })

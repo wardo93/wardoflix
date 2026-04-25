@@ -252,11 +252,14 @@
         fillColor: color,
         fillOpacity: 0.5,
       })
-      const geoLine = r.geoSource === 'gps'
-        ? `GPS · ±${r.gpsAccuracy != null ? r.gpsAccuracy + 'm' : '?'}`
-        : r.geoError
-          ? `IP only · GPS failed: ${r.geoError}`
-          : 'IP · ~metro'
+      const fmtAcc = (m) => m == null ? '?' : m < 1000 ? `${m}m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)}km`
+      const geoLine = r.geoSource === 'manual'
+        ? 'Manual · exact'
+        : r.geoSource === 'gps'
+          ? `GPS · ±${fmtAcc(r.gpsAccuracy)}`
+          : r.geoError
+            ? `IP only · GPS failed: ${r.geoError}`
+            : 'IP · ~metro'
       const headerName = r.friendlyName
         ? `<div style="font-weight:600;font-size:14px">${r.friendlyName}</div>`
         : r.osUser

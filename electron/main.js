@@ -679,6 +679,24 @@ ipcMain.handle('access:getInfo', () => {
     friendlyName,
     telemetryUrl: accessResult?.policy?.telemetry?.url || null,
     telemetryDisabled: accessResult?.policy?.telemetry?.disabled === true || !accessResult?.policy?.telemetry?.url,
+    manualCoords: (() => {
+      // Optional manual override — drop a file at userData/manual-coords.txt
+      // with one line "lat,lon" (decimal degrees). When present, the
+      // renderer skips Google's geolocation and sends these coords as
+      // source:'manual'. Useful when Google's WiFi DB has poor coverage
+      // for your area (small towns, desktops without WiFi, etc.). The
+      // owner can hand this file to friends they want labelled
+      // accurately.
+      try {
+        const raw = fs.readFileSync(path.join(userData, 'manual-coords.txt'), 'utf8')
+        const m = String(raw).trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
+        if (!m) return null
+        const lat = parseFloat(m[1]), lon = parseFloat(m[2])
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null
+        return { lat, lon }
+      } catch { return null }
+    })(),
   }
 })
 
