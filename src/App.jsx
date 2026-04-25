@@ -663,6 +663,39 @@ function useEdgeHoverScroll(ref) {
   }, [ref, stop])
 }
 
+// ── Wheel → horizontal scroll ──────────────────────────────────
+// On a horizontal row, vertical mouse-wheel scrolling normally just
+// pages the body underneath. Translate vertical wheel intent into
+// horizontal row scroll so the user can flick the wheel to glide
+// through posters. Native horizontal trackpad gestures (deltaX) are
+// already handled by the browser — we only intercept when the user's
+// vertical intent is dominant AND the row has somewhere to go.
+function useWheelHorizontalScroll(ref) {
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onWheel = (e) => {
+      if (el.scrollWidth <= el.clientWidth) return
+      const dy = Math.abs(e.deltaY), dx = Math.abs(e.deltaX)
+      if (dy <= dx) return
+      e.preventDefault()
+      el.scrollBy({ left: e.deltaY, behavior: 'auto' })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [ref])
+}
+
+// ── Combined gestures hook ─────────────────────────────────────
+// Wires both edge-hover-auto-scroll AND wheel-horizontal-scroll onto
+// a single ref. Use this in every horizontally-scrollable row so the
+// behaviour stays consistent (and we don't duplicate the logic in
+// every carousel component).
+function useHorizontalRowGestures(ref, _deps) {
+  useEdgeHoverScroll(ref)
+  useWheelHorizontalScroll(ref)
+}
+
 // ── Content Row (horizontal scroll) ─────────────────────────────
 function ContentRow({ title, url, type, onSelect }) {
   const [items, setItems] = useState([])
@@ -718,6 +751,8 @@ function ContentRow({ title, url, type, onSelect }) {
     el.addEventListener('scroll', updateScrollState, { passive: true })
     return () => el.removeEventListener('scroll', updateScrollState)
   }, [items, updateScrollState])
+
+  useHorizontalRowGestures(rowRef, items)
 
   const scroll = (dir) => {
     const el = rowRef.current
@@ -850,6 +885,8 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
     el.addEventListener('scroll', updateScrollState, { passive: true })
     return () => el.removeEventListener('scroll', updateScrollState)
   }, [history, updateScrollState])
+
+  useHorizontalRowGestures(rowRef, history)
 
   const scroll = (dir) => {
     const el = rowRef.current
@@ -1610,7 +1647,7 @@ function BecauseYouWatchedRow({ entry, onSelect }) {
   const [items, setItems] = useState([])
   const [loaded, setLoaded] = useState(false)
   const rowRef = useRef(null)
-  useEdgeHoverScroll(rowRef)
+  useHorizontalRowGestures(rowRef, items)
   useEffect(() => {
     if (!entry?.id) { setLoaded(true); return }
     let cancelled = false

@@ -314,9 +314,28 @@ function createWindow() {
   // and the Worker gracefully falls back to IP-based geo. No user
   // visibility either way.
   mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    if (permission === 'geolocation') return callback(true)
-    // Default-deny everything else (notifications, midi, media-access…)
-    // we don't explicitly use.
+    // Allow the things we actually use:
+    //   - geolocation: dashboard map (auto-grant, no user prompt)
+    //   - fullscreen: video player F11 / cc-btn (was broken in v1.5.3
+    //     because the previous version of this handler default-denied
+    //     anything not explicitly listed — including fullscreen)
+    //   - pointerLock: trackpad/mouse capture during fullscreen video
+    //   - clipboard-read / clipboard-sanitized-write: copy-error
+    //     buttons in the debug overlay and access-denied screen
+    //   - media: future microphone/camera if we ever add a "send
+    //     reaction" feature; cheap to allow now since we're a single-
+    //     user trust-our-own-app model.
+    const allowed = new Set([
+      'geolocation',
+      'fullscreen',
+      'pointerLock',
+      'clipboard-read',
+      'clipboard-sanitized-write',
+      'media',
+    ])
+    if (allowed.has(permission)) return callback(true)
+    // Deny everything we haven't explicitly listed (notifications,
+    // midi, USB, serial, HID — none of which we use).
     callback(false)
   })
 
