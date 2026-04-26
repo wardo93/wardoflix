@@ -1201,12 +1201,21 @@ async function torrentioLookup(kind, id, season, episode) {
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const r = await fetchWithTimeout(url, {}, 6000)
+          // 10s timeout — Torrentio's mirrors are sometimes slow but
+          // alive. The previous 6s was eager: a healthy mirror taking
+          // 7s to respond would be aborted, then on retry would
+          // succeed but get logged as a phantom "fail" + recovery
+          // pair. Bumping to 10 reduces those false aborts that show
+          // up as half-empty source lists in the picker.
+          const r = await fetchWithTimeout(url, {}, 10000)
           if (!r.ok) {
-            // 429 or 503 from a Cloudflare-fronted service is the classic
-            // rate-limit signature. Cool this host off for 10 min so the
-            // rest of this user's session doesn't keep hammering.
-            if (r.status === 429 || r.status === 503) {
+            // 429 / 502 / 503: the Cloudflare-fronted service is sad.
+            // 429 = rate limit, 502 = upstream down, 503 = unavailable.
+            // All three should trigger a host cooloff so we don't keep
+            // hammering — the OTHER mirror in the fan-out usually
+            // covers us during the cool window. 10 minute cooloff
+            // matches typical Cloudflare throttle decay.
+            if (r.status === 429 || r.status === 502 || r.status === 503) {
               try { markHostRateLimited(new URL(url).host) } catch {}
             }
             console.warn(`[torrentio] ${r.status} ${url}`)
@@ -2418,32 +2427,54 @@ app.get('/remux/:infoHash/*', async (req, res) => {
       ]
     : ['-c:v', 'copy']
 
+  // ffmpeg startup latency tuning. The previous defaults
+  // (-analyzeduration 10000000 -probesize 10000000) made ffmpeg buffer
+  // 10MB of input AND analyze 10 seconds of bitstream BEFORE writing
+  // a single byte to its output pipe. On a 2.5MB/s WebTorrent feed
+  // that's ~4s of input buffering plus the analysis time itself, on
+  // top of the libx264 encoder warming up. Net result: 10-15 seconds
+  // of black screen before the first frame appears, which made
+  // 10-bit HEVC sources (LotR, Avatar, etc.) feel "broken" even though
+  // they were transcoding correctly.
+  //
+  // Lowering to 1MB/1s gets ffmpeg producing output within ~1s of
+  // the first piece arriving from WebTorrent. If the format-detection
+  // is genuinely shaky on a particular source, ffmpeg will retry
+  // automatically — it doesn't hard-fail at probesize-exhausted, it
+  // just falls back to its built-in heuristics.
   const ffmpegArgs = [
     ...(seekSec > 0 ? ['-ss', String(seekSec)] : []),
-    '-analyzeduration', '10000000',
-    '-probesize', '10000000',
+    '-analyzeduration', '1000000',  // 1 second instead of 10
+    '-probesize', '1000000',        // 1 MB instead of 10
     // Reconnect on transient read errors from WebTorrent's stream server
-    // (e.g. a piece gap when the swarm is still filling). Without these
-    // ffmpeg bails on the first 5xx from the local stream, which bubbles
-    // up to the user as a mid-playback decode error.
+    // (e.g. a piece gap when the swarm is still filling).
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
+    // Tell the input demuxer to start producing output as soon as it
+    // has frames, instead of buffering for "smooth" playback. We don't
+    // care about smooth on the demux side — the player buffers
+    // downstream. nobuffer + flush_packets together bring the
+    // first-frame latency down by another second or two on slow inputs.
+    '-fflags', '+nobuffer+flush_packets+genpts',
     '-i', inputUrl,
     ...audioMap,
     ...videoEncoder,
-    // Audio output: pin to stereo AAC. Source multi-channel layouts
-    // (EAC3 7.1, TrueHD, Dolby Atmos, 5.1 surround) used to reach the
-    // AAC encoder unchanged, and libavcodec's AAC encoder intermittently
-    // produced either invalid bitstreams (Chromium refuses) or silent-
-    // but-technically-valid output, depending on the exact channel
-    // layout. Downmixing to 2.0 pre-encode is what every mainstream
-    // streaming service does — quality is fine and compatibility is 100%.
-    // -ac 2 must come BEFORE -c:a aac so it applies to the encoder input.
+    // Audio: stereo AAC. Source multi-channel layouts (EAC3 7.1,
+    // TrueHD, 5.1) used to reach the AAC encoder unchanged and produce
+    // invalid-or-silent output. Downmixing pre-encode is what every
+    // mainstream streaming service does. -ac 2 must come BEFORE -c:a aac
+    // so it applies to the encoder input.
     '-ac', '2',
     '-c:a', 'aac',
     '-b:a', '192k',
     '-f', 'mp4',
+    // Smaller fragment duration so the player gets its first fragment
+    // (and therefore its first decodable bytes) sooner. With the
+    // default ~1-second fragment threshold we'd buffer up to a second
+    // of output before emitting; 200ms means the first frame reaches
+    // the browser within a quarter-second of being encoded.
+    '-frag_duration', '200000',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     'pipe:1',
   ]
