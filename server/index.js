@@ -1935,7 +1935,24 @@ app.get('/api/stream/progress/:infoHash', (req, res) => {
     return
   }
 
+  // SSE session cap. Without this, a connection that silently dropped
+  // without sending RST (common on flaky home wifi) would let the
+  // setInterval keep writing forever — Node holds the socket+timer in
+  // memory, never frees, and after a few hours of bingeing the server's
+  // RAM looks alarming. 90 minutes is longer than any movie plus
+  // generous credit-roll buffer; the renderer reconnects naturally on
+  // the next stream so the cap is invisible to the user.
+  const MAX_SESSION_MS = 90 * 60 * 1000
+  const sessionStart = Date.now()
+
   const interval = setInterval(() => {
+    if (Date.now() - sessionStart > MAX_SESSION_MS) {
+      // Aged out — close cleanly and let the client reconnect if it
+      // still cares.
+      try { res.end() } catch {}
+      clearInterval(interval)
+      return
+    }
     const data = {
       peers: torrent.numPeers,
       downloaded: torrent.downloaded,
@@ -1943,10 +1960,17 @@ app.get('/api/stream/progress/:infoHash', (req, res) => {
       progress: Math.round((torrent.progress || 0) * 100),
       ready: torrent.ready,
     }
-    res.write(`data: ${JSON.stringify(data)}\n\n`)
+    try {
+      // res.write returns false when the kernel buffer is backed up.
+      // For SSE that almost always means the client is gone but we
+      // never got an RST. Treat as disconnect and tear down.
+      const ok = res.write(`data: ${JSON.stringify(data)}\n\n`)
+      if (!ok) { try { res.end() } catch {}; clearInterval(interval) }
+    } catch { clearInterval(interval) }
   }, 1000)
 
   req.on('close', () => clearInterval(interval))
+  req.on('error', () => clearInterval(interval))
 })
 
 // ── Audio tracks probe endpoint ─────────────────────────────────
