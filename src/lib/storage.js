@@ -526,6 +526,111 @@ export function markWatched(meta) {
     try { window.dispatchEvent(new Event('wardoflix:watched-updated')) } catch {}
   } catch {}
 }
+// ── Library / Watchlist ────────────────────────────────────────
+// Stremio-style "save for later" list. Distinct from Continue
+// Watching (auto-populated from playback history): Library is
+// explicit user intent — "I want to watch this." A title can be in
+// the Library without ever being played, and once played it stays
+// in the Library until explicitly removed.
+//
+// Stored per profile so each user's watchlist is independent.
+// Capped at 200 entries; oldest dropped first when full. Items keep
+// the same shape as elsewhere in the app (id, title, poster, type,
+// genre_ids, addedAt). Add/remove fires 'wardoflix:library-updated'
+// so the UI re-renders without a full reload.
+const LIBRARY_MAX = 200
+function libraryKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `wardoflix:library:${id}` : 'wardoflix:library'
+}
+export function loadLibrary() {
+  try {
+    const raw = localStorage.getItem(libraryKeyForActive())
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+function saveLibrary(list) {
+  try {
+    localStorage.setItem(libraryKeyForActive(), JSON.stringify(list.slice(0, LIBRARY_MAX)))
+    window.dispatchEvent(new Event('wardoflix:library-updated'))
+  } catch {}
+}
+export function isInLibrary(item) {
+  if (!item?.id) return false
+  return loadLibrary().some((e) => String(e.id) === String(item.id))
+}
+export function addToLibrary(item) {
+  if (!item?.id) return
+  const list = loadLibrary()
+  if (list.some((e) => String(e.id) === String(item.id))) return // already there
+  // Trim to a stable shape so a stale entry from a year-old version
+  // doesn't pollute the new UI.
+  const entry = {
+    id: item.id,
+    title: item.title || item.name || 'Untitled',
+    poster: item.poster || item.poster_path || null,
+    backdrop: item.backdrop || item.backdrop_path || null,
+    type: item.type || 'movies',
+    genreIds: Array.isArray(item.genre_ids) ? item.genre_ids : (Array.isArray(item.genreIds) ? item.genreIds : []),
+    rating: item.vote_average || item.rating || 0,
+    addedAt: Date.now(),
+  }
+  saveLibrary([entry, ...list])
+}
+export function removeFromLibrary(item) {
+  if (!item?.id) return
+  const list = loadLibrary().filter((e) => String(e.id) !== String(item.id))
+  saveLibrary(list)
+}
+export function useLibrary() {
+  const [items, setItems] = useState(() => loadLibrary())
+  useEffect(() => {
+    const sync = () => setItems(loadLibrary())
+    window.addEventListener('wardoflix:library-updated', sync)
+    window.addEventListener('wardoflix:profiles-updated', sync)
+    const onStorage = (e) => { if (e.key?.startsWith('wardoflix:library')) sync() }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener('wardoflix:library-updated', sync)
+      window.removeEventListener('wardoflix:profiles-updated', sync)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+  return items
+}
+
+// ── Per-show playback rate ─────────────────────────────────────
+// When a user sets playback to 1.5× for a documentary they binge in
+// chunks, they want it 1.5× the next time they open it too. Keyed
+// per title id; profile-namespaced. Default 1.0 (handled by the
+// caller — null return means "no preference, leave at 1.0").
+function playbackRateKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `wardoflix:playback-rate:${id}` : 'wardoflix:playback-rate'
+}
+export function loadPlaybackRates() {
+  try { return JSON.parse(localStorage.getItem(playbackRateKeyForActive()) || '{}') || {} }
+  catch { return {} }
+}
+export function readPlaybackRate(titleId) {
+  if (!titleId) return null
+  const v = loadPlaybackRates()[String(titleId)]
+  return Number.isFinite(v) && v >= 0.25 && v <= 3 ? v : null
+}
+export function savePlaybackRate(titleId, rate) {
+  if (!titleId || !Number.isFinite(rate)) return
+  try {
+    const map = loadPlaybackRates()
+    if (Math.abs(rate - 1) < 0.01) delete map[String(titleId)]
+    else map[String(titleId)] = Math.round(rate * 100) / 100
+    const keys = Object.keys(map)
+    if (keys.length > 500) for (let i = 0; i < 50; i++) delete map[keys[i]]
+    localStorage.setItem(playbackRateKeyForActive(), JSON.stringify(map))
+  } catch {}
+}
+
 // Inverse of markWatched — called by the manual toggle (shift-click on
 // an episode button). Idempotent: noop if the entry isn't there.
 export function unmarkWatched(meta) {

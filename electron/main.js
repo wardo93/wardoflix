@@ -736,6 +736,49 @@ ipcMain.handle('discord:clearActivity', () => {
   try { clearStreamingActivity() } catch {}
 })
 
+// Launch a stream URL in the OS default player (or, on Windows,
+// specifically VLC if installed at the canonical path). Stremio-style
+// "Open in external player" feature — useful for HDR passthrough,
+// Atmos audio, or just because you prefer mpv/VLC over Chromium's
+// video element. Renderer fetches /api/external-url/:hash/:path to
+// get the LAN URL, then sends it here.
+ipcMain.handle('external-player:open', async (_e, url) => {
+  try {
+    if (!url || typeof url !== 'string') return { ok: false, reason: 'no-url' }
+    if (!/^https?:\/\//i.test(url)) return { ok: false, reason: 'invalid-url' }
+    // Try VLC first on Windows — it's the most common power-user
+    // player and registering an http handler is rare. Fall back to
+    // shell.openExternal if VLC isn't found.
+    if (process.platform === 'win32') {
+      const candidates = [
+        'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe',
+        'C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe',
+      ]
+      for (const exe of candidates) {
+        try {
+          if (fs.existsSync(exe)) {
+            const { spawn } = require('node:child_process')
+            const child = spawn(exe, [url, '--play-and-exit'], { detached: true, stdio: 'ignore' })
+            child.unref()
+            log(`[external-player] launched VLC at ${exe}`)
+            return { ok: true, player: 'vlc' }
+          }
+        } catch (e) { log('[external-player] VLC spawn try failed:', e?.message || e) }
+      }
+    }
+    // Generic fallback — pass to the OS, which resolves via the
+    // default-program registration for http URLs (usually a browser,
+    // but power users often register VLC/mpv as the default for
+    // streaming URLs).
+    await shell.openExternal(url)
+    log('[external-player] handed off to OS default')
+    return { ok: true, player: 'default' }
+  } catch (e) {
+    log('[external-player] failed:', e?.stack || e?.message || e)
+    return { ok: false, reason: e?.message || 'failed' }
+  }
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

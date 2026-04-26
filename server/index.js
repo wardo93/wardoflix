@@ -2676,6 +2676,31 @@ function getLanIp() {
   return '127.0.0.1'
 }
 
+// External-player launch URL builder. Returns a LAN-reachable URL
+// pointing at our /remux endpoint (transcoded to a Chromium-friendly
+// fMP4 already, which VLC and MPV both happily play) so the user can
+// open the stream in a desktop player. Consumers (the renderer's
+// "Open in VLC / MPV" button) just hit this and pass the URL to
+// shell.openExternal — Windows/macOS file association picks the
+// right player.
+app.get('/api/external-url/:infoHash/*', async (req, res) => {
+  const hash = req.params.infoHash?.toLowerCase()
+  if (!hash || !/^[a-f0-9]{40}$/.test(hash)) {
+    return res.status(400).json({ error: 'Invalid infoHash' })
+  }
+  // Path comes in as URL-encoded; pass through as-is so /remux can
+  // re-encode internally. We don't have to validate — /remux does.
+  const path = req.params[0] || ''
+  const lan = getLanIp()
+  // Use the LAN IP rather than localhost — this URL gets handed to
+  // an EXTERNAL process (VLC/MPV) which on Windows runs in its own
+  // socket context. Using the LAN address makes it accessible whether
+  // the player is launched as the same user, a service, or piped
+  // through localhost-aware firewalls.
+  const url = `http://${lan}:${API_PORT}/remux/${hash}/${path}?transcode=1`
+  res.json({ url })
+})
+
 app.get('/api/dlna/devices', (req, res) => {
   const list = [...dlnaPlayers.entries()].map(([id, p]) => ({
     id,

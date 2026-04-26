@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('wardoflixDiscord', {
   clearActivity: () => ipcRenderer.invoke('discord:clearActivity').catch(() => {}),
 })
 
+// External-player launch (VLC / MPV / OS default). Renderer hands a
+// LAN-reachable HTTP URL up; main launches the player. Returns
+// {ok, player} so the renderer can toast the user with which player
+// actually opened it.
+contextBridge.exposeInMainWorld('wardoflixExternal', {
+  openInPlayer: (url) => ipcRenderer.invoke('external-player:open', url),
+})
+
 contextBridge.exposeInMainWorld('wardoflixUpdater', {
   // Trigger a check right now. Returns the latest status snapshot.
   check: () => ipcRenderer.invoke('updater:check'),

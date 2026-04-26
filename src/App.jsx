@@ -27,6 +27,8 @@ import {
   loadSubStyle, saveSubStyle,
   loadAudioPref, saveAudioPref, pickPreferredAudioTrack,
   loadQualityPrefs, readQualityPref, saveQualityPref, sortByQualityPref,
+  loadLibrary, isInLibrary, addToLibrary, removeFromLibrary, useLibrary,
+  readPlaybackRate, savePlaybackRate,
   loadWatchedMap, markWatched, unmarkWatched, isWatched,
   loadVolumePref, saveVolumePref,
 } from './lib/storage.js'
@@ -1068,6 +1070,47 @@ function ForYou({ profile, onSelect, onPlayHistory }) {
   )
 }
 
+// Library view — Stremio-style "saved for later" grid. Subscribed to
+// the live useLibrary() hook so add/remove from the DetailModal
+// reflects immediately. Empty state is a friendly nudge to use the
+// bookmark button in the modal so the feature is discoverable.
+function LibraryView({ onSelect }) {
+  const items = useLibrary()
+  if (!items.length) {
+    return (
+      <div className="search-empty">
+        <p>Your library is empty. Click the <strong>Add to library</strong> button on any movie or series detail page to save it here.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="search-grid">
+      {items.map((entry) => (
+        <button
+          key={entry.id}
+          className="search-card"
+          onClick={() => onSelect({
+            id: entry.id,
+            title: entry.title,
+            poster: entry.poster,
+            backdrop: entry.backdrop,
+            type: entry.type,
+            rating: entry.rating || 0,
+            genre_ids: entry.genreIds || [],
+          })}
+        >
+          {entry.poster ? <img src={entry.poster} alt="" loading="lazy" />
+            : <div className="poster-placeholder">{(entry.title || '?')[0]}</div>}
+          <div className="search-card-info">
+            <span className="search-card-title">{entry.title}</span>
+            {entry.rating > 0 && <span className="search-card-rating">★ {entry.rating.toFixed(1)}</span>}
+          </div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // One-off row that pulls TMDB 'similar' items off the details
 // endpoint. Shown when the user has at least one history entry
 // with an id — otherwise TMDB can't resolve it.
@@ -1234,6 +1277,14 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
             <span>Home</span>
           </button>
           <button
+            className={`sidebar-item ${view === 'library' ? 'active' : ''}`}
+            onClick={() => { setView('library'); setActiveGenre(null); setSearchQuery('') }}
+            title="Your Library"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 3a2 2 0 0 0-2 2v17l9-4 9 4V5a2 2 0 0 0-2-2H5z"/></svg>
+            <span>Library</span>
+          </button>
+          <button
             className={`sidebar-item ${view === 'movies' ? 'active' : ''}`}
             onClick={() => goType('movies')}
             title="Movies"
@@ -1285,6 +1336,8 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
 
         {isSearching ? (
           <SearchResults type={type} query={debouncedSearch} onSelect={onSelectTitle} />
+        ) : view === 'library' ? (
+          <LibraryView onSelect={onSelectTitle} />
         ) : view === 'foryou' && activeProfile ? (
           <ForYou profile={activeProfile} onSelect={onSelectTitle} onPlayHistory={onPlayHistory} />
         ) : view === 'home' ? (
@@ -1421,6 +1474,16 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
   // Rich details: trailer, cast, similar titles (Stremio-parity)
   const [details, setDetails] = useState(null)
   const [showTrailer, setShowTrailer] = useState(false)
+  // Live "is this item in the library" flag, recalculated whenever the
+  // library list mutates (via the broadcast event) so the bookmark
+  // button toggles instantly without a remount.
+  const [libraryEntryPresent, setLibraryEntryPresent] = useState(() => isInLibrary(item))
+  useEffect(() => {
+    const sync = () => setLibraryEntryPresent(isInLibrary(item))
+    sync()
+    window.addEventListener('wardoflix:library-updated', sync)
+    return () => window.removeEventListener('wardoflix:library-updated', sync)
+  }, [item])
   // Detect TV with a heuristic fallback so a missing `type` field can't
   // silently downgrade a series into a movie (which renders a flat
   // torrent list instead of the episode picker). Regression fix for
@@ -1673,6 +1736,24 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                   Watch Trailer
                 </button>
               )}
+              {/* Library toggle — Stremio-style "save for later". State
+                  reflects in real time via the wardoflix:library-updated
+                  event broadcast from add/remove. */}
+              <button
+                className={`modal-trailer-btn ${libraryEntryPresent ? 'is-in-library' : ''}`}
+                onClick={() => {
+                  if (libraryEntryPresent) removeFromLibrary(item)
+                  else addToLibrary(item)
+                }}
+                title={libraryEntryPresent ? 'Remove from your library' : 'Save to your library'}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                  {libraryEntryPresent
+                    ? <path d="M5 3a2 2 0 0 0-2 2v17l9-4 9 4V5a2 2 0 0 0-2-2H5z" />
+                    : <path d="M5 3a2 2 0 0 0-2 2v17l9-4 9 4V5a2 2 0 0 0-2-2H5zm0 2h14v15.07l-7-3.11-7 3.11V5z" />}
+                </svg>
+                {libraryEntryPresent ? 'In your library' : 'Add to library'}
+              </button>
             </div>
             {details?.tagline && <p className="modal-tagline">"{details.tagline}"</p>}
             {item.overview && <p className="modal-overview">{item.overview}</p>}
@@ -2225,6 +2306,9 @@ function PlayerControls({
           e.preventDefault()
           const rate = Math.max(0.25, (p.playbackRate() || 1) - 0.25)
           p.playbackRate(rate)
+          // Persist per title so the next play of the same show
+          // remembers your speed (Stremio-style).
+          if (metadata?.id) savePlaybackRate(metadata.id, rate)
           showControls()
           break
         }
@@ -2233,6 +2317,7 @@ function PlayerControls({
           e.preventDefault()
           const rate = Math.min(3, (p.playbackRate() || 1) + 0.25)
           p.playbackRate(rate)
+          if (metadata?.id) savePlaybackRate(metadata.id, rate)
           showControls()
           break
         }
@@ -2619,6 +2704,44 @@ function PlayerControls({
                 </div>
               )}
             </div>
+
+            {/* Open in external player (VLC / OS default). Hits the
+                server's /api/external-url to get a LAN URL pointed at
+                /remux for the current torrent, then asks the main
+                process to launch it. Useful for HDR passthrough,
+                Atmos audio, or just because you prefer mpv/VLC over
+                Chromium's video element. */}
+            <button
+              className="cc-btn"
+              title="Open in VLC / external player"
+              onClick={async () => {
+                try {
+                  const src = playerRef.current?.currentSrc?.() || ''
+                  const m = src.match(/\/remux\/([a-f0-9]{40})\/([^?#]+)/i)
+                  if (!m) {
+                    try { window.dispatchEvent(new CustomEvent('wardoflix:toast', { detail: { id: Date.now(), message: 'External player only available for transcoded streams', variant: 'warning', timeoutMs: 4000 } })) } catch {}
+                    return
+                  }
+                  const r = await fetch(`/api/external-url/${m[1]}/${m[2]}`)
+                  const data = await r.json()
+                  if (!data.url) throw new Error('No URL')
+                  const result = await window.wardoflixExternal?.openInPlayer?.(data.url)
+                  if (result?.ok) {
+                    try { window.dispatchEvent(new CustomEvent('wardoflix:toast', { detail: { id: Date.now(), message: `Opened in ${result.player === 'vlc' ? 'VLC' : 'default player'}. The in-app stream stays running so you can use either.`, variant: 'success', title: 'External player', timeoutMs: 5000 } })) } catch {}
+                  } else {
+                    try { window.dispatchEvent(new CustomEvent('wardoflix:toast', { detail: { id: Date.now(), message: 'Couldn\'t launch external player: ' + (result?.reason || 'unknown'), variant: 'error', timeoutMs: 5000 } })) } catch {}
+                  }
+                } catch (e) {
+                  try { window.dispatchEvent(new CustomEvent('wardoflix:toast', { detail: { id: Date.now(), message: 'External player failed: ' + (e?.message || ''), variant: 'error', timeoutMs: 5000 } })) } catch {}
+                }
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="white" strokeWidth="2">
+                <path d="M14 3h7v7" />
+                <path d="M21 3 11 13" />
+                <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+              </svg>
+            </button>
 
             {/* Mini-player (Picture-in-Picture). Browser-native PiP
                 pops the video out into a floating always-on-top window
@@ -3241,6 +3364,21 @@ function App() {
     }
     player.src({ type: guessType(source), src: source })
     playerSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+    // Restore the per-title playback rate if the user previously set
+    // one for this show/movie. Default 1.0 if no preference. Applied
+    // on loadedmetadata so video.js doesn't reset it during the
+    // source-change tear-up.
+    const savedRate = readPlaybackRate(playingMetadata?.id)
+    if (savedRate && savedRate !== 1) {
+      const applyRate = () => {
+        try { player.playbackRate(savedRate) } catch {}
+      }
+      player.one('loadedmetadata', applyRate)
+      // Belt and suspenders — some video.js versions reset rate on
+      // canplay even after we set it on loadedmetadata.
+      player.one('canplay', applyRate)
+    }
 
     // Restore the persisted per-title sub offset — falls back to the
     // show-wide offset, falls back to 0. So switching episodes within
