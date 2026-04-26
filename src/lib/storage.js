@@ -482,6 +482,21 @@ export function markWatched(meta) {
     try { window.dispatchEvent(new Event('wardoflix:watched-updated')) } catch {}
   } catch {}
 }
+// Inverse of markWatched — called by the manual toggle (shift-click on
+// an episode button). Idempotent: noop if the entry isn't there.
+export function unmarkWatched(meta) {
+  const key = resumeKey(meta)
+  if (!key) return
+  try {
+    const map = loadWatchedMap()
+    if (map[key]) {
+      delete map[key]
+      localStorage.setItem(watchedKeyForActive(), JSON.stringify(map))
+      try { window.dispatchEvent(new Event('wardoflix:watched-updated')) } catch {}
+    }
+  } catch {}
+}
+
 export function isWatched(meta) {
   const key = resumeKey(meta)
   if (!key) return false

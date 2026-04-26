@@ -26,7 +26,7 @@ import {
   loadIntroMarks, readIntroMark, saveIntroMark,
   loadSubStyle, saveSubStyle,
   loadAudioPref, saveAudioPref, pickPreferredAudioTrack,
-  loadWatchedMap, markWatched, isWatched,
+  loadWatchedMap, markWatched, unmarkWatched, isWatched,
   loadVolumePref, saveVolumePref,
 } from './lib/storage.js'
 
@@ -220,7 +220,21 @@ function SearchResults({ type, query, onSelect }) {
     return () => { cancelled = true }
   }, [type, query])
 
-  if (loading) return <div className="search-loading"><span className="spinner large" /><p>Searching...</p></div>
+  if (loading) return (
+    // Skeleton grid while we wait — feels much faster than a single
+    // spinner because the page commits to its final shape immediately
+    // and only the contents fade in. Same component shape as the
+    // populated grid below so layout doesn't jump on transition.
+    <div className="search-grid">
+      {[...Array(18)].map((_, i) => (
+        <div key={i} className="search-card-skeleton" aria-hidden="true">
+          <div className="skeleton-poster" />
+          <div className="skeleton-line skeleton-line--wide" />
+          <div className="skeleton-line skeleton-line--narrow" />
+        </div>
+      ))}
+    </div>
+  )
   if (!items.length) return <div className="search-empty"><p>No results for "{query}"</p></div>
 
   return (
@@ -1686,12 +1700,23 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                     // season/episode, so we build a minimal meta that
                     // matches resumeKey()'s expectations.
                     const watched = isWatched({ id: item?.id, title: item?.title, season: Number(t.season || selectedSeason), episode: epNum })
+                    const epMeta = { id: item?.id, title: item?.title, season: Number(t.season || selectedSeason), episode: epNum }
                     return (
                       <button
                         key={i}
                         className={`source-btn ${watched ? 'source-btn--watched' : ''}`}
                         data-watched={watched ? 'yes' : 'no'}
-                        onClick={() => {
+                        title={watched ? 'Watched — Shift+click to unmark' : 'Click to play · Shift+click to mark watched'}
+                        onClick={(e) => {
+                          // Shift+click toggles watched state without
+                          // playing — discoverable via the title tooltip
+                          // and the keyboard-shortcuts panel.
+                          if (e.shiftKey) {
+                            e.preventDefault()
+                            if (watched) unmarkWatched(epMeta)
+                            else markWatched(epMeta)
+                            return
+                          }
                           if (isResolving) return
                           if (hasMagnet) handleStream(t.magnet, { season: selectedSeason, episode: epNum })
                           else handleUnavailableEpisode({ season: Number(t.season || selectedSeason), episode: epNum })
@@ -1888,6 +1913,10 @@ function PlayerControls({
   const [playing, setPlaying] = useState(false)
   const [waiting, setWaiting] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
+  // Hover position on the seek bar — used to show a "time at this point"
+  // tooltip + a hover-shadow on the bar. null when the cursor isn't over
+  // the seek bar.
+  const [hoverPct, setHoverPct] = useState(null)
   const [duration, setDuration] = useState(0)
   const [buffered, setBuffered] = useState(0)
   const [volume, setVolume] = useState(1)
@@ -2294,9 +2323,36 @@ function PlayerControls({
           className="cc-seek"
           ref={seekBarRef}
           onMouseDown={startSeek}
+          onMouseMove={(e) => {
+            const bar = seekBarRef.current
+            if (!bar) return
+            const rect = bar.getBoundingClientRect()
+            const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+            setHoverPct(pct)
+          }}
+          onMouseLeave={() => setHoverPct(null)}
         >
           <div className="cc-seek-buffer" style={{ width: `${bufferPct}%` }} />
           <div className="cc-seek-progress" style={{ width: `${progress}%` }} />
+          {/* Hover preview — a faint vertical line at the cursor x and a
+              floating time tooltip above. When the hover point is
+              already buffered we use a stronger color to hint that
+              clicking will be instant; otherwise it'll respawn ffmpeg
+              via the seek-reload path (which has a brief black flash). */}
+          {hoverPct != null && duration > 0 && (
+            <>
+              <div
+                className={`cc-seek-hover ${hoverPct * 100 <= bufferPct ? 'in-buffer' : 'out-buffer'}`}
+                style={{ left: `${hoverPct * 100}%` }}
+              />
+              <div
+                className="cc-seek-hover-time"
+                style={{ left: `${hoverPct * 100}%` }}
+              >
+                {formatTime(hoverPct * duration)}
+              </div>
+            </>
+          )}
           {/* Resume dot — shows where you left off last time, faint so
               it doesn't compete with the playhead. Hidden once you've
               played past it. Read once at mount; the value doesn't

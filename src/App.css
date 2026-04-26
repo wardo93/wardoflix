@@ -2239,6 +2239,71 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .cc-seek:hover .cc-seek-thumb { transform: translate(-50%, -50%) scale(1); }
 
+/* Seek-bar hover preview: vertical line + floating time. The bar
+   colour-codes whether the hover point is already buffered (cheap
+   click — just native seek) or out-of-buffer (will respawn ffmpeg
+   via the seek-reload path with a brief blackout). */
+.cc-seek-hover {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  pointer-events: none;
+  z-index: 2;
+  transform: translateX(-50%);
+}
+.cc-seek-hover.in-buffer { background: rgba(255, 255, 255, 0.55); }
+.cc-seek-hover.out-buffer { background: rgba(201, 169, 110, 0.65); }
+/* Loading skeletons for grids — shimmering placeholder cards. Used
+   in the search results grid so the layout commits before the data
+   arrives, eliminating the "blank screen → sudden grid" flash. */
+@keyframes wf-skeleton-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.search-card-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skeleton-poster,
+.skeleton-line {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.10) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: wf-skeleton-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+.skeleton-poster {
+  aspect-ratio: 2 / 3;
+  width: 100%;
+}
+.skeleton-line {
+  height: 12px;
+}
+.skeleton-line--wide   { width: 80%; }
+.skeleton-line--narrow { width: 45%; }
+
+.cc-seek-hover-time {
+  position: absolute;
+  bottom: 22px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
 /* Resume position dot — faint marker showing where last session left
    off, hidden once playback passes that point. */
 .cc-seek-resume {

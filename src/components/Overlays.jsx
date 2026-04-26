@@ -69,10 +69,17 @@ export function ShortcutsOverlay({ onClose }) {
       title: 'Playback',
       items: [
         ['Space', 'Play / pause'],
+        ['K', 'Play / pause (alt)'],
         ['← / →', 'Seek ±10 s'],
+        ['J / L', 'Seek ±10 s (alt)'],
         ['↑ / ↓', 'Volume ±5%'],
+        ['0 – 9', 'Jump to N × 10% of the movie'],
         ['M', 'Mute / unmute'],
         ['F', 'Fullscreen'],
+        ['C', 'Toggle subtitles on/off'],
+        ['< / >', 'Playback speed −/+ 0.25×'],
+        ['Click middle of player', 'Play / pause'],
+        ['Double-click middle', 'Toggle fullscreen'],
       ],
     },
     {
@@ -83,6 +90,22 @@ export function ShortcutsOverlay({ onClose }) {
         ['Ctrl + Shift + D', 'Debug overlay'],
         ['?', 'This help panel'],
         ['Esc', 'Close overlays / exit fullscreen'],
+      ],
+    },
+    {
+      title: 'Subtitles',
+      items: [
+        ['Subs button → Timing', 'Adjust subtitle delay (±0.5 s steps)'],
+        ['Apply to show', 'Save the current offset for every episode'],
+        ['Sub size / position / weight', 'In Timing panel — persisted per profile'],
+      ],
+    },
+    {
+      title: 'TV shows',
+      items: [
+        ['Set intro start / Set intro end', 'Mark the intro range while watching — surfaces a Skip Intro button on every episode'],
+        ['Set outro start', 'Marks credits — Skip Credits jumps to next episode'],
+        ['Shift + click episode', 'Toggle watched (✓) without playing'],
       ],
     },
   ]
