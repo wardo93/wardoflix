@@ -463,6 +463,124 @@ function clearResumePosition(meta) {
   } catch {}
 }
 
+// ── Subtitle offset, persisted per title ────────────────────────
+// Previously sub offset reset every time you switched episodes. For a
+// show with consistently-mistimed subs, that meant adjusting on every
+// click. Now stored per (showId, season, episode) AND a fallback per
+// (showId, *) so a series-wide offset applies to every episode unless
+// you specifically tuned that one. The lookup tries episode-specific
+// first, then the show fallback.
+function loadSubOffsets() {
+  try {
+    const raw = localStorage.getItem('wardoflix:sub-offsets')
+    return raw ? (JSON.parse(raw) || {}) : {}
+  } catch { return {} }
+}
+function subOffsetKey(meta, scope = 'ep') {
+  if (!meta) return null
+  const id = meta.id || meta.title
+  if (!id) return null
+  if (scope === 'show') return `${id}|*|*`
+  return `${id}|${meta.season || 0}|${meta.episode || 0}`
+}
+function readSubOffset(meta) {
+  if (!meta) return 0
+  const map = loadSubOffsets()
+  const epKey = subOffsetKey(meta, 'ep')
+  const showKey = subOffsetKey(meta, 'show')
+  const v = (epKey && map[epKey]) ?? (showKey && map[showKey]) ?? 0
+  return Number.isFinite(v) ? v : 0
+}
+function saveSubOffset(meta, offset, applyToShow = false) {
+  const key = subOffsetKey(meta, applyToShow ? 'show' : 'ep')
+  if (!key) return
+  try {
+    const map = loadSubOffsets()
+    if (Math.abs(offset) < 0.05) delete map[key]
+    else map[key] = Math.round(offset * 100) / 100
+    // Cap stored entries
+    const keys = Object.keys(map)
+    if (keys.length > 500) for (let i = 0; i < 100; i++) delete map[keys[i]]
+    localStorage.setItem('wardoflix:sub-offsets', JSON.stringify(map))
+  } catch {}
+}
+
+// ── Skip intro / outro marks, per show ──────────────────────────
+// User can mark "intro starts at X, intro ends at Y" once per show
+// and the player offers a "Skip Intro" button between those
+// timestamps for every episode. Stored per show id (not per episode)
+// because intro/outro positions are show-wide (~always).
+function loadIntroMarks() {
+  try { return JSON.parse(localStorage.getItem('wardoflix:intro-marks') || '{}') || {} }
+  catch { return {} }
+}
+function readIntroMark(showId) {
+  if (!showId) return null
+  return loadIntroMarks()[String(showId)] || null
+}
+function saveIntroMark(showId, mark) {
+  if (!showId) return
+  try {
+    const map = loadIntroMarks()
+    if (!mark) delete map[String(showId)]
+    else map[String(showId)] = { introStart: mark.introStart || null, introEnd: mark.introEnd || null, outroStart: mark.outroStart || null }
+    localStorage.setItem('wardoflix:intro-marks', JSON.stringify(map))
+  } catch {}
+}
+
+// ── Subtitle styling preferences (global per profile) ───────────
+// Size, position, font, background. Applied via inline CSS variables
+// on the player container so video.js text tracks pick up the styling
+// from the existing .video-js .vjs-text-track-display rules.
+function subStyleKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `wardoflix:sub-style:${id}` : 'wardoflix:sub-style'
+}
+const DEFAULT_SUB_STYLE = { size: 100, position: 0, weight: 'normal', bg: 'shadow' }
+function loadSubStyle() {
+  try {
+    const raw = localStorage.getItem(subStyleKeyForActive())
+    return { ...DEFAULT_SUB_STYLE, ...(raw ? JSON.parse(raw) : {}) }
+  } catch { return { ...DEFAULT_SUB_STYLE } }
+}
+function saveSubStyle(style) {
+  try { localStorage.setItem(subStyleKeyForActive(), JSON.stringify({ ...DEFAULT_SUB_STYLE, ...style })) } catch {}
+}
+
+// ── Audio language preference (per profile) ─────────────────────
+// When a torrent has multiple audio tracks and one matches the user's
+// preferred language code(s), auto-pick that instead of the default
+// (which is just track #0). Codes use the same ISO-639-2/B form
+// (eng, dut, nld, fre, spa…) we surface in the audio picker.
+function audioPrefKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `wardoflix:audio-pref:${id}` : 'wardoflix:audio-pref'
+}
+function loadAudioPref() {
+  try {
+    const raw = localStorage.getItem(audioPrefKeyForActive())
+    if (!raw) return ['eng']
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === 'string').slice(0, 6) : ['eng']
+  } catch { return ['eng'] }
+}
+function saveAudioPref(langs) {
+  try { localStorage.setItem(audioPrefKeyForActive(), JSON.stringify((langs || []).slice(0, 6))) } catch {}
+}
+// Pick the best track index given the user's preference order. Falls
+// back to track 0 if no preference matches.
+function pickPreferredAudioTrack(tracks, prefs) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null
+  if (!Array.isArray(prefs) || prefs.length === 0) return tracks[0].index
+  for (const want of prefs) {
+    const w = String(want || '').toLowerCase()
+    if (!w) continue
+    const m = tracks.find((t) => String(t.lang || '').toLowerCase() === w)
+    if (m) return m.index
+  }
+  return tracks[0].index
+}
+
 // ── Watched set (separate from resume) ──────────────────────────
 // Resume is "I stopped here"; watched is "I finished this". When a
 // resume entry crosses the end-boundary we clear it *and* flip the
@@ -903,7 +1021,29 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
     window.dispatchEvent(new Event('wardoflix:history-updated'))
   }
 
-  if (!history.length) return null
+  // Dedupe TV-show history: collapse consecutive entries of the same
+  // show into one card (showing the LATEST episode watched). For movies
+  // and one-off TV plays, this is a no-op. Otherwise a binge-watching
+  // session of "The Boys S01E01..S01E08" used to fill the entire
+  // Continue Watching row with eight near-identical posters; now it
+  // shows as one card labelled "S01E08" (the most recent), and the
+  // resume position points at that episode. Keep oldest seen-first
+  // ordering by collapsing rather than sorting.
+  const dedupedHistory = useMemo(() => {
+    const out = []
+    const seenTitles = new Set()
+    for (const h of history) {
+      const key = h.id ? `id:${h.id}` : `title:${h.title}`
+      if (h.season || h.episode) {
+        if (seenTitles.has(key)) continue
+        seenTitles.add(key)
+      }
+      out.push(h)
+    }
+    return out
+  }, [history])
+
+  if (!dedupedHistory.length) return null
 
   return (
     <div className="content-row">
@@ -915,7 +1055,7 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
           </button>
         )}
         <div className="row-posters" ref={rowRef}>
-          {history.map((entry, i) => (
+          {dedupedHistory.map((entry, i) => (
             <button
               key={`${entry.title}-${entry.season || ''}-${entry.episode || ''}-${i}`}
               className="row-poster history-poster"
@@ -2818,7 +2958,7 @@ function PlayerControls({
   streamProgress, castState, onCast, onStopCast, onBack,
   audioTracks, activeAudioIdx, onAudioChange, knownDuration,
   dlnaDevices, dlnaActive, onDlnaCast, onDlnaStop, onDlnaRefresh,
-  onSeek, remuxTimeOffset = 0,
+  onSeek, remuxTimeOffset = 0, subStyle, setSubStyle,
 }) {
   // remuxTimeOffset: seconds into the ORIGINAL movie that the current
   // /remux stream starts at. ffmpeg's `-ss N -i ...` resets output
@@ -3188,12 +3328,36 @@ function PlayerControls({
     ? `S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}`
     : ''
 
+  // Skip Intro button visibility: show when the user is inside a
+  // marked intro range. Reads the per-show intro mark from localStorage.
+  // Outro mark is supported the same way for the end credits.
+  const introMark = useMemo(() => readIntroMark(metadata?.id), [metadata?.id])
+  const inIntroRange = introMark?.introStart != null && introMark?.introEnd != null
+    && absCurrent >= introMark.introStart - 0.5 && absCurrent < introMark.introEnd
+  const inOutroRange = introMark?.outroStart != null && duration > 0
+    && absCurrent >= introMark.outroStart - 0.5 && absCurrent < duration - 5
+
   return (
     <div
       className={`custom-controls ${visible ? 'visible' : ''}`}
       onMouseMove={showControls}
       onClick={(e) => { if (e.target === e.currentTarget) togglePlay() }}
     >
+      {/* Skip Intro / Skip Outro overlay button — only visible inside
+          the marked range. Uses doSeek (the remux-aware seek helper)
+          so the jump works on /remux URLs without restarting the show. */}
+      {(inIntroRange || inOutroRange) && (
+        <button
+          className="cc-skip-overlay"
+          onClick={(e) => {
+            e.stopPropagation()
+            if (inIntroRange) doSeek(introMark.introEnd)
+            else if (inOutroRange) doSeek(duration - 1) // jump to end → triggers ended → next ep
+          }}
+        >
+          {inIntroRange ? 'Skip Intro' : 'Skip Credits'} ↓
+        </button>
+      )}
       {/* Top gradient + title */}
       <div className="cc-top" onClick={(e) => e.stopPropagation()}>
         <button className="cc-back" onClick={onBack} title="Back">
@@ -3235,6 +3399,37 @@ function PlayerControls({
         >
           <div className="cc-seek-buffer" style={{ width: `${bufferPct}%` }} />
           <div className="cc-seek-progress" style={{ width: `${progress}%` }} />
+          {/* Resume dot — shows where you left off last time, faint so
+              it doesn't compete with the playhead. Hidden once you've
+              played past it. Read once at mount; the value doesn't
+              change during a session because we cleared the resume
+              entry on the previous play's exit. */}
+          {(() => {
+            try {
+              const resumeAt = readResumePosition(metadata)
+              if (!resumeAt || !duration || duration <= 0) return null
+              const pct = Math.min(100, Math.max(0, (resumeAt / duration) * 100))
+              if (absCurrent > resumeAt + 5) return null
+              return <div className="cc-seek-resume" style={{ left: `${pct}%` }} title={`Resume from ${formatTime(resumeAt)}`} />
+            } catch { return null }
+          })()}
+          {/* Skip-intro/outro markers if user has set them for this show */}
+          {(() => {
+            try {
+              const mark = readIntroMark(metadata?.id)
+              if (!mark || !duration) return null
+              const range = (start, end, cls) => {
+                if (start == null || end == null || end <= start) return null
+                const a = Math.max(0, Math.min(100, (start / duration) * 100))
+                const b = Math.max(0, Math.min(100, (end / duration) * 100))
+                return <div className={cls} style={{ left: `${a}%`, width: `${b - a}%` }} />
+              }
+              return <>
+                {range(mark.introStart, mark.introEnd, 'cc-seek-intro')}
+                {mark.outroStart != null && range(mark.outroStart, duration, 'cc-seek-intro')}
+              </>
+            } catch { return null }
+          })()}
           <div className="cc-seek-thumb" style={{ left: `${progress}%` }} />
         </div>
 
@@ -3313,12 +3508,68 @@ function PlayerControls({
             {/* Timing panel */}
             {timingOpen && (
               <div className="cc-timing-panel" onClick={(e) => e.stopPropagation()}>
-                <span className="cc-timing-label">Subtitle delay</span>
-                <button className="cc-timing-btn" onClick={() => setSubOffset((v) => Math.round((v - 0.5) * 10) / 10)}>−0.5s</button>
-                <span className="cc-timing-value">{subOffset > 0 ? '+' : ''}{subOffset.toFixed(1)}s</span>
-                <button className="cc-timing-btn" onClick={() => setSubOffset((v) => Math.round((v + 0.5) * 10) / 10)}>+0.5s</button>
-                {subOffset !== 0 && <button className="cc-timing-reset" onClick={() => setSubOffset(0)}>Reset</button>}
-                <button className="cc-timing-done" onClick={() => setTimingOpen(false)}>Done</button>
+                <div className="cc-timing-row">
+                  <span className="cc-timing-label">Subtitle delay</span>
+                  <button className="cc-timing-btn" onClick={() => setSubOffset((v) => Math.round((v - 0.5) * 10) / 10)}>−0.5s</button>
+                  <span className="cc-timing-value">{subOffset > 0 ? '+' : ''}{subOffset.toFixed(1)}s</span>
+                  <button className="cc-timing-btn" onClick={() => setSubOffset((v) => Math.round((v + 0.5) * 10) / 10)}>+0.5s</button>
+                  {subOffset !== 0 && (
+                    <button className="cc-timing-btn" onClick={() => {
+                      // Apply the current offset to ALL episodes of this
+                      // show — useful when the whole series shares a
+                      // sub-timing issue.
+                      saveSubOffset(metadata, subOffset, true)
+                    }}>Apply to show</button>
+                  )}
+                  {subOffset !== 0 && <button className="cc-timing-reset" onClick={() => setSubOffset(0)}>Reset</button>}
+                </div>
+                {metadata?.id && (
+                  <div className="cc-timing-row">
+                    <span className="cc-timing-label">Skip-intro marks</span>
+                    <button className="cc-timing-btn" onClick={() => {
+                      // Mark the START of the intro at the current time.
+                      const mark = readIntroMark(metadata.id) || {}
+                      saveIntroMark(metadata.id, { ...mark, introStart: Math.floor(absCurrent) })
+                    }}>Set intro start</button>
+                    <button className="cc-timing-btn" onClick={() => {
+                      // Mark the END of the intro at the current time.
+                      const mark = readIntroMark(metadata.id) || {}
+                      saveIntroMark(metadata.id, { ...mark, introEnd: Math.floor(absCurrent) })
+                    }}>Set intro end</button>
+                    <button className="cc-timing-btn" onClick={() => {
+                      const mark = readIntroMark(metadata.id) || {}
+                      saveIntroMark(metadata.id, { ...mark, outroStart: Math.floor(absCurrent) })
+                    }}>Set outro start</button>
+                    {introMark && (
+                      <button className="cc-timing-reset" onClick={() => saveIntroMark(metadata.id, null)}>Clear all</button>
+                    )}
+                  </div>
+                )}
+                {setSubStyle && (
+                  <>
+                    <div className="cc-timing-row">
+                      <span className="cc-timing-label">Sub size</span>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.max(50, (s.size || 100) - 10) }))}>−</button>
+                      <span className="cc-timing-value">{subStyle?.size || 100}%</span>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.min(200, (s.size || 100) + 10) }))}>+</button>
+                    </div>
+                    <div className="cc-timing-row">
+                      <span className="cc-timing-label">Position</span>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, position: Math.max(0, (s.position || 0) - 5) }))}>↓</button>
+                      <span className="cc-timing-value">{subStyle?.position || 0}%</span>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, position: Math.min(40, (s.position || 0) + 5) }))}>↑</button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, bg: s.bg === 'shadow' ? 'box' : s.bg === 'box' ? 'none' : 'shadow' }))}>
+                        BG: {subStyle?.bg || 'shadow'}
+                      </button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, weight: s.weight === 'bold' ? 'normal' : 'bold' }))}>
+                        {subStyle?.weight === 'bold' ? 'Bold' : 'Regular'}
+                      </button>
+                    </div>
+                  </>
+                )}
+                <div className="cc-timing-row">
+                  <button className="cc-timing-done" onClick={() => setTimingOpen(false)}>Done</button>
+                </div>
               </div>
             )}
 
@@ -3684,7 +3935,25 @@ function App() {
   const [streamProgress, setStreamProgress] = useState(null)
   const [availableSubs, setAvailableSubs] = useState([])
   const [subOffset, setSubOffset] = useState(0)
+  // Persist sub offset whenever it changes during playback. The
+  // restore happens in the player effect via readSubOffset(playingMetadata)
+  // when a new source loads. The skip is for the implicit setSubOffset(0)
+  // that fires on source change before the restore — without it we'd
+  // immediately wipe the user's saved offset for that title.
+  const subOffsetSaveTimerRef = useRef(null)
+  useEffect(() => {
+    if (!playingMetadata) return
+    if (subOffsetSaveTimerRef.current) clearTimeout(subOffsetSaveTimerRef.current)
+    subOffsetSaveTimerRef.current = setTimeout(() => saveSubOffset(playingMetadata, subOffset), 600)
+  }, [subOffset, playingMetadata])
   const [subPanelOpen, setSubPanelOpen] = useState(false)
+  // Subtitle styling — size%, vertical-position%, weight, background.
+  // Loaded from localStorage on mount, persisted on every change.
+  // Applied via injected <style> rules targeting video.js's text-track
+  // cue elements, so it lives outside React's render cycle but always
+  // reflects the latest pref.
+  const [subStyle, setSubStyle] = useState(() => loadSubStyle())
+  useEffect(() => { saveSubStyle(subStyle) }, [subStyle])
   const [audioTracks, setAudioTracks] = useState([])
   const [activeAudioIdx, setActiveAudioIdx] = useState(null)
   const [streamInfoHash, setStreamInfoHash] = useState(null)
@@ -4168,7 +4437,10 @@ function App() {
     player.src({ type: guessType(source), src: source })
     playerSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 
-    setSubOffset(0)
+    // Restore the persisted per-title sub offset — falls back to the
+    // show-wide offset, falls back to 0. So switching episodes within
+    // a show keeps your offset by default.
+    setSubOffset(readSubOffset(playingMetadata))
     setAvailableSubs([])
     setSubPanelOpen(false)
 
@@ -4854,7 +5126,24 @@ function App() {
                 if (ctl.signal.aborted) return
                 if (d.audioTracks?.length > 0) {
                   setAudioTracks(d.audioTracks)
-                  setActiveAudioIdx(d.audioTracks[0].index)
+                  // Auto-pick the user's preferred audio language if any
+                  // of the available tracks matches. Falls back to track
+                  // 0 if no preference matches. The audio picker still
+                  // lets you switch manually after.
+                  const prefIdx = pickPreferredAudioTrack(d.audioTracks, loadAudioPref())
+                  setActiveAudioIdx(prefIdx ?? d.audioTracks[0].index)
+                  // If we picked something other than track 0 AND it's
+                  // a /remux URL, re-issue with ?audio=N so ffmpeg maps
+                  // that track. Otherwise the player would still get
+                  // the default audio with no easy way to switch on
+                  // copy-mode streams.
+                  if (prefIdx != null && prefIdx !== d.audioTracks[0].index && data.url?.includes('/remux/')) {
+                    try {
+                      const urlObj = new URL((window.__API_BASE__ || '') + data.url)
+                      urlObj.searchParams.set('audio', String(prefIdx))
+                      setSource(urlObj.toString())
+                    } catch {}
+                  }
                 }
                 if (d.duration && d.duration > 0) setStreamDuration(d.duration)
                 // Record the probed codec for the debug overlay.
@@ -5465,6 +5754,8 @@ function App() {
                           return Number.isFinite(t) && t > 0 ? t : 0
                         } catch { return 0 }
                       })()}
+                      subStyle={subStyle}
+                      setSubStyle={setSubStyle}
                     />
                   </div>
                 </>
@@ -5494,6 +5785,26 @@ function App() {
       )}
 
       <ToastHost />
+
+      {/* Subtitle style sheet — applied globally so video.js text-track
+          cue elements pick up size/position/background overrides. The
+          CSS variables let one declaration drive every cue rendered
+          anywhere in the app. */}
+      <style>{`
+        .vjs-text-track-cue,
+        .vjs-text-track-cue * {
+          font-size: ${subStyle.size}% !important;
+          font-weight: ${subStyle.weight === 'bold' ? '700' : '400'} !important;
+          ${subStyle.bg === 'box'
+            ? 'background-color: rgba(0,0,0,0.75) !important; padding: 0.15em 0.4em !important; border-radius: 3px !important; text-shadow: none !important;'
+            : subStyle.bg === 'none'
+              ? 'background-color: transparent !important; text-shadow: none !important;'
+              : /* shadow (default) */ 'background-color: transparent !important; text-shadow: 1px 1px 2px rgba(0,0,0,0.85), -1px -1px 2px rgba(0,0,0,0.85), 1px -1px 2px rgba(0,0,0,0.85), -1px 1px 2px rgba(0,0,0,0.85) !important;'}
+        }
+        .vjs-text-track-display {
+          bottom: ${subStyle.position}% !important;
+        }
+      `}</style>
 
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
 

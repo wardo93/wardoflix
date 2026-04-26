@@ -2239,6 +2239,72 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .cc-seek:hover .cc-seek-thumb { transform: translate(-50%, -50%) scale(1); }
 
+/* Resume position dot — faint marker showing where last session left
+   off, hidden once playback passes that point. */
+.cc-seek-resume {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.65);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Skip-intro/outro range strips on the seek bar — striped background
+   so they're distinguishable from buffered/progress without looking
+   like an error. */
+.cc-seek-intro {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(201, 169, 110, 0.35) 0,
+    rgba(201, 169, 110, 0.35) 4px,
+    rgba(201, 169, 110, 0.15) 4px,
+    rgba(201, 169, 110, 0.15) 8px
+  );
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 2px;
+}
+
+/* Skip-intro / Skip-credits floating button. Bottom-right of the
+   player, above the controls, dismisses by clicking. */
+.cc-skip-overlay {
+  position: absolute;
+  right: 28px;
+  bottom: 110px;
+  background: rgba(0, 0, 0, 0.78);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 6;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  transition: background 0.15s, transform 0.1s;
+}
+.cc-skip-overlay:hover { background: rgba(201, 169, 110, 0.85); color: #0e0a1c; }
+.cc-skip-overlay:active { transform: translateY(1px); }
+
+/* Timing-panel row — used for sub delay, intro marks, sub style.
+   Stacks rows vertically, items horizontally within a row. */
+.cc-timing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.cc-timing-row:first-of-type { margin-top: 0; }
+
 /* Control bar */
 .cc-bar {
   display: flex;
