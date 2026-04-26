@@ -18,6 +18,16 @@ contextBridge.exposeInMainWorld('wardoflixAccess', {
   getInfo: () => ipcRenderer.invoke('access:getInfo'),
 })
 
+// Discord Rich Presence — renderer pushes the currently-streaming
+// title up to main, which forwards to the local Discord IPC. No-op
+// when no Discord application id is configured in access.json. The
+// renderer is intentionally fire-and-forget: failures (Discord not
+// running, RPC dependency missing) don't surface back as errors.
+contextBridge.exposeInMainWorld('wardoflixDiscord', {
+  setActivity: (meta) => ipcRenderer.invoke('discord:setActivity', meta).catch(() => {}),
+  clearActivity: () => ipcRenderer.invoke('discord:clearActivity').catch(() => {}),
+})
+
 contextBridge.exposeInMainWorld('wardoflixUpdater', {
   // Trigger a check right now. Returns the latest status snapshot.
   check: () => ipcRenderer.invoke('updater:check'),

@@ -26,6 +26,7 @@ import {
   loadIntroMarks, readIntroMark, saveIntroMark,
   loadSubStyle, saveSubStyle,
   loadAudioPref, saveAudioPref, pickPreferredAudioTrack,
+  loadQualityPrefs, readQualityPref, saveQualityPref, sortByQualityPref,
   loadWatchedMap, markWatched, unmarkWatched, isWatched,
   loadVolumePref, saveVolumePref,
 } from './lib/storage.js'
@@ -1474,7 +1475,13 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
     fetch(`/api/torrents?${params}`)
       .then((r) => r.json().catch(() => ({ torrents: [] })))
       .then((data) => {
-        setTorrents(data.torrents || [])
+        // Apply the user's per-title quality preference. The server
+        // returns torrents sorted by seed count; we re-sort so the
+        // preferred quality bubbles to the top, but ties (no
+        // preference, or preference doesn't match anything) preserve
+        // the seed-count ordering.
+        const pref = readQualityPref(item.id)
+        setTorrents(sortByQualityPref(data.torrents || [], pref))
         setBySeason(data.bySeason || {})
         const s = data.seasons || []
         setSeasons(s)
@@ -1718,6 +1725,10 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                             return
                           }
                           if (isResolving) return
+                          // Save quality pref keyed on the SHOW id so
+                          // every episode picker remembers the same
+                          // preference for the series.
+                          if (item?.id && t.quality) saveQualityPref(item.id, t.quality)
                           if (hasMagnet) handleStream(t.magnet, { season: selectedSeason, episode: epNum })
                           else handleUnavailableEpisode({ season: Number(t.season || selectedSeason), episode: epNum })
                         }}
@@ -1751,7 +1762,12 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
             ) : showFlatList && torrents.length > 0 ? (
               <div className="sources-list">
                 {torrents.slice(0, 12).map((t, i) => (
-                  <button key={i} className="source-btn" onClick={() => handleStream(t.magnet)}>
+                  <button key={i} className="source-btn" onClick={() => {
+                    // Remember this quality so next time we open this
+                    // title, the picker pre-sorts to it.
+                    if (item?.id && t.quality) saveQualityPref(item.id, t.quality)
+                    handleStream(t.magnet)
+                  }}>
                     <span className="source-quality">{t.quality}</span>
                     <span
                       className={`source-seeds source-seeds--${seedHealth(t.seeds)}`}
@@ -2604,6 +2620,41 @@ function PlayerControls({
               )}
             </div>
 
+            {/* Mini-player (Picture-in-Picture). Browser-native PiP
+                pops the video out into a floating always-on-top window
+                that survives Alt+Tab — perfect for keeping a show
+                running while you do something else. video.js exposes
+                the API on the underlying tech element via
+                requestPictureInPicture / exitPictureInPicture. Falls
+                back gracefully if the browser refuses (Chromium
+                always supports it; some Electron builds need a flag). */}
+            <button
+              className="cc-btn"
+              title="Mini-player (Picture-in-Picture)"
+              onClick={async () => {
+                try {
+                  const p = playerRef.current
+                  if (!p || p.isDisposed?.()) return
+                  const el = p.tech?.()?.el?.() || p.el?.().querySelector('video')
+                  if (!el) return
+                  if (document.pictureInPictureElement) {
+                    await document.exitPictureInPicture().catch(() => {})
+                  } else if (typeof el.requestPictureInPicture === 'function') {
+                    await el.requestPictureInPicture()
+                  }
+                  showControls?.()
+                } catch (e) {
+                  // Non-fatal — just inform the user.
+                  try { window.dispatchEvent(new CustomEvent('wardoflix:toast', { detail: { id: Date.now(), message: 'Picture-in-Picture not available: ' + (e?.message || 'unknown'), variant: 'warning', timeoutMs: 4000 } })) } catch {}
+                }
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="white" strokeWidth="2">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <rect x="13" y="11" width="6" height="6" rx="1" fill="white" />
+              </svg>
+            </button>
+
             {/* Fullscreen */}
             <button className="cc-btn" onClick={toggleFullscreen} title="Fullscreen">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="white" strokeWidth="2">
@@ -2882,6 +2933,26 @@ function App() {
   // reload path has somewhere to record the offset for future use.
   const remuxTimeOffsetRef = useRef(0)
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
+
+  // Discord Rich Presence — push the playing metadata up to the main
+  // process whenever it changes. Cleared when the player teardown sets
+  // playingMetadata back to null. Pure fire-and-forget; the bridge
+  // gracefully no-ops when Discord isn't running or no application id
+  // is configured.
+  useEffect(() => {
+    try {
+      if (playingMetadata && source) {
+        window.wardoflixDiscord?.setActivity?.({
+          title: playingMetadata.title || '',
+          season: playingMetadata.season || null,
+          episode: playingMetadata.episode || null,
+          type: playingMetadata.type || null,
+        })
+      } else {
+        window.wardoflixDiscord?.clearActivity?.()
+      }
+    } catch {}
+  }, [playingMetadata, source])
 
   useEffect(() => {
     return () => {
@@ -4604,6 +4675,7 @@ function App() {
           serverHealthy={serverHealthy}
           audioTracks={audioTracks}
           activeAudioIdx={activeAudioIdx}
+          streamProgress={streamProgress}
           onClose={() => setDebugOpen(false)}
         />
       )}

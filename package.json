@@ -2,7 +2,7 @@
   "name": "wardoflix",
   "productName": "WardoFlix",
   "private": true,
-  "version": "1.5.19",
+  "version": "1.5.20",
   "description": "WardoFlix — a premium streaming client",
   "author": "WardoFlix",
   "main": "electron/main.js",
@@ -39,7 +39,8 @@
       "node_modules/webtorrent/**/*",
       "node_modules/bittorrent-dht/**/*",
       "node_modules/bufferutil/**/*",
-      "node_modules/utf-8-validate/**/*"
+      "node_modules/utf-8-validate/**/*",
+      "node_modules/discord-rpc/**/*"
     ],
     "directories": {
       "output": "release",
@@ -78,6 +79,7 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
+    "discord-rpc": "^4.0.1",
     "dlnacasts2": "^0.2.0",
     "dotenv": "^16.4.5",
     "electron-updater": "^6.8.3",

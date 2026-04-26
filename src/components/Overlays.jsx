@@ -141,6 +141,37 @@ export function ShortcutsOverlay({ onClose }) {
 // (no app state) so a render of the overlay doesn't ripple through
 // memoized children. Fields chosen specifically so a user screenshot
 // tells us everything we need to triage a decode error.
+// Tiny inline sparkline. Renders a 60-sample SVG path for the health
+// of the current torrent (peer count over time). No deps; works even
+// when streamInfoHash is null (renders an empty box).
+function PeerSparkline({ history, label }) {
+  const w = 220, h = 32
+  const max = Math.max(2, ...history)
+  // Build a polyline path from the samples. Older samples on the left,
+  // newest on the right.
+  const pts = history.length > 0
+    ? history.map((v, i) => `${(i / Math.max(1, history.length - 1)) * w},${h - (v / max) * (h - 2) - 1}`).join(' ')
+    : ''
+  const last = history[history.length - 1] ?? 0
+  return (
+    <div className="wf-debug-spark">
+      <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} preserveAspectRatio="none">
+        <rect x="0" y="0" width={w} height={h} fill="rgba(255,255,255,0.03)" rx="3" />
+        {pts && <polyline points={pts} fill="none" stroke="#c9a96e" strokeWidth="1.5" />}
+        {pts && (
+          <circle
+            cx={w}
+            cy={h - (last / max) * (h - 2) - 1}
+            r="2.5"
+            fill="#c9a96e"
+          />
+        )}
+      </svg>
+      <span className="wf-debug-spark-label">{label}: <strong>{last}</strong> {history.length > 1 && `peak ${max}`}</span>
+    </div>
+  )
+}
+
 export function DebugOverlay({
   source,
   sourceType,
@@ -155,8 +186,20 @@ export function DebugOverlay({
   serverHealthy,
   audioTracks,
   activeAudioIdx,
+  streamProgress,
   onClose,
 }) {
+  // Rolling peer-count history for the sparkline. Sample on every
+  // streamProgress update (~1 Hz) — keep the last 60 samples (~ a
+  // minute of peer-count history). Reset whenever the torrent hash
+  // changes so a previous show's swarm doesn't bleed into the new one.
+  const [peerHistory, setPeerHistory] = useState([])
+  useEffect(() => { setPeerHistory([]) }, [streamInfoHash])
+  useEffect(() => {
+    if (!streamProgress || typeof streamProgress.peers !== 'number') return
+    setPeerHistory((h) => [...h.slice(-59), streamProgress.peers])
+  }, [streamProgress])
+
   const [accessInfo, setAccessInfo] = useState(null)
   useEffect(() => {
     let cancelled = false
@@ -230,6 +273,7 @@ export function DebugOverlay({
         <dt>Last error</dt><dd>{playbackError ? `code ${playbackError.code}: ${playbackError.message}` : '—'}</dd>
         <dt>Warning</dt><dd>{streamWarning || '—'}</dd>
         <dt>Install ID</dt><dd className="wf-debug-mono wf-debug-wrap" title={accessInfo?.installId || ''}>{accessInfo?.installId || '—'}</dd>
+        <dt>Peer health</dt><dd><PeerSparkline history={peerHistory} label="peers" /></dd>
       </dl>
       <div className="wf-debug-foot">
         <button type="button" className="wf-debug-btn" onClick={copyAll}>Copy as JSON</button>

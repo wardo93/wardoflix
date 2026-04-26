@@ -432,6 +432,50 @@ export function loadAudioPref() {
 export function saveAudioPref(langs) {
   try { localStorage.setItem(audioPrefKeyForActive(), JSON.stringify((langs || []).slice(0, 6))) } catch {}
 }
+// ── Per-title quality preference ────────────────────────────────
+// When a user picks a torrent for a movie/show, remember the quality
+// they chose ("1080p", "2160p", etc.) so next time we open that title,
+// the picker pre-sorts its preferred quality to the top. Keyed per
+// title id. Profile-namespaced because two viewers might prefer
+// different qualities.
+function qualityPrefKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `wardoflix:quality-pref:${id}` : 'wardoflix:quality-pref'
+}
+export function loadQualityPrefs() {
+  try { return JSON.parse(localStorage.getItem(qualityPrefKeyForActive()) || '{}') || {} }
+  catch { return {} }
+}
+export function readQualityPref(titleId) {
+  if (!titleId) return null
+  return loadQualityPrefs()[String(titleId)] || null
+}
+export function saveQualityPref(titleId, quality) {
+  if (!titleId || !quality) return
+  try {
+    const map = loadQualityPrefs()
+    map[String(titleId)] = String(quality).slice(0, 16)
+    // Cap so the map can't grow forever — drop oldest 50 once we hit 500
+    const keys = Object.keys(map)
+    if (keys.length > 500) for (let i = 0; i < 50; i++) delete map[keys[i]]
+    localStorage.setItem(qualityPrefKeyForActive(), JSON.stringify(map))
+  } catch {}
+}
+// Sort a list of source candidates so the preferred quality bubbles to
+// the top. Within the same quality bucket, original seed order is
+// preserved (already sorted by seeds desc).
+export function sortByQualityPref(candidates, preferredQuality) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return candidates
+  if (!preferredQuality) return candidates
+  const want = String(preferredQuality).toLowerCase()
+  return [...candidates].sort((a, b) => {
+    const aMatch = String(a.quality || '').toLowerCase() === want ? 1 : 0
+    const bMatch = String(b.quality || '').toLowerCase() === want ? 1 : 0
+    if (aMatch !== bMatch) return bMatch - aMatch
+    return 0
+  })
+}
+
 // Pick the best track index given the user's preference order. Falls
 // back to track 0 if no preference matches.
 export function pickPreferredAudioTrack(tracks, prefs) {

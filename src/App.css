@@ -2254,6 +2254,24 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .cc-seek-hover.in-buffer { background: rgba(255, 255, 255, 0.55); }
 .cc-seek-hover.out-buffer { background: rgba(201, 169, 110, 0.65); }
+/* Peer-count sparkline in the debug overlay (Ctrl+Shift+D). The svg
+   is drawn on a near-transparent panel; the polyline uses the
+   rose-gold accent so a glance tells you whether the swarm is healthy
+   or falling off. */
+.wf-debug-spark {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wf-debug-spark svg {
+  display: block;
+  border-radius: 3px;
+}
+.wf-debug-spark-label {
+  font-size: 11px;
+  color: var(--muted, #8fa3b8);
+}
+
 /* Loading skeletons for grids — shimmering placeholder cards. Used
    in the search results grid so the layout commits before the data
    arrives, eliminating the "blank screen → sudden grid" flash. */

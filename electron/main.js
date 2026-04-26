@@ -15,6 +15,7 @@ const require = createRequire(import.meta.url)
 const { autoUpdater } = require('electron-updater')
 
 import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId, readCachedPolicySync } from './access-control.js'
+import { initDiscordPresence, setStreamingActivity, clearStreamingActivity, teardownDiscordPresence } from './discord-presence.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -669,6 +670,11 @@ app.whenReady().then(async () => {
     })
   } catch {}
 
+  // Discord Rich Presence — opt-in via access.json (discord_application_id).
+  // Connects to local Discord IPC (no network); no-op if Discord isn't
+  // running or the field isn't set.
+  try { initDiscordPresence({ policy: accessResult.policy, log }) } catch {}
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -719,6 +725,17 @@ ipcMain.handle('access:getInfo', () => {
   }
 })
 
+// Renderer → main bridge for Discord Rich Presence. Renderer calls
+// these whenever the playing-metadata state changes; main applies it
+// to the Discord IPC client. Running per-renderer-frame is fine
+// because setStreamingActivity short-circuits when there's no client.
+ipcMain.handle('discord:setActivity', (_e, meta) => {
+  try { setStreamingActivity(meta, log) } catch {}
+})
+ipcMain.handle('discord:clearActivity', () => {
+  try { clearStreamingActivity() } catch {}
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
@@ -728,6 +745,7 @@ app.on('before-quit', (e) => {
   // Mark intentional shutdown so the server's 'exit' handler doesn't
   // immediately re-fork it mid-quit.
   shuttingDown = true
+  try { teardownDiscordPresence() } catch {}
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null }
   if (stableTimer) { clearTimeout(stableTimer); stableTimer = null }
   // Fast path: no server or second call — let Electron quit immediately.
