@@ -36,6 +36,16 @@ contextBridge.exposeInMainWorld('wardoflixExternal', {
   openInPlayer: (url) => ipcRenderer.invoke('external-player:open', url),
 })
 
+// Custom window controls. The app runs frameless-ish (auto-launches in
+// Electron fullscreen, no native title bar) so the topbar renders its
+// own minimize / close buttons. They call into main here. Errors are
+// swallowed — there's nothing useful the renderer can do with them and
+// we already log on the main side.
+contextBridge.exposeInMainWorld('wardoflixWindow', {
+  minimize: () => ipcRenderer.invoke('window:minimize').catch(() => ({ ok: false })),
+  close: () => ipcRenderer.invoke('window:close').catch(() => ({ ok: false })),
+})
+
 contextBridge.exposeInMainWorld('wardoflixUpdater', {
   // Trigger a check right now. Returns the latest status snapshot.
   check: () => ipcRenderer.invoke('updater:check'),

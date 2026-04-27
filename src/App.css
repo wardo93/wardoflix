@@ -275,7 +275,11 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   z-index: 50;
   display: flex;
   align-items: center;
-  padding: 0 2.5rem;
+  /* Right padding is 0 so the window-control group sits flush against
+     the corner like a real Windows title bar — the controls handle
+     their own internal spacing. Content elements use margin-right to
+     stay clear of the corner buttons (≈92px wide). */
+  padding: 0 0 0 2.5rem;
   height: 64px;
   background: rgba(14, 10, 28, 0.78);
   backdrop-filter: blur(14px) saturate(160%);
@@ -396,32 +400,57 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   .topbar-version { display: none; }
 }
 
-/* ─── Topbar exit button ───
-   Closes the Electron window (main.js auto-quits on window-all-closed).
-   Sits at the far right of the topbar — needed because the app launches
-   in a fullscreen Electron window with no native title bar X. */
-.topbar-exit {
-  margin-left: 0.75rem;
-  width: 32px;
-  height: 32px;
+/* ─── Topbar window controls ───
+   Synthetic Minimize + Close buttons that sit flush in the top-right
+   corner, mimicking a Windows title bar. Needed because the app
+   launches in (Electron) fullscreen by default with no native title
+   bar — without these, the only ways out are F11, Alt+F4, or a
+   keyboard shortcut the user might not know about.
+   Both buttons are full topbar height (64px), borderless, and use
+   subtle background tints on hover. The close button takes the
+   classic Windows red (#e81123) on hover for instant recognition. */
+.topbar-window-controls {
+  margin-left: 0.5rem;
+  display: inline-flex;
+  align-items: stretch;
+  align-self: stretch;        /* fill the topbar's full 64px height */
+  height: 64px;
+  -webkit-app-region: no-drag; /* clickable through any drag region */
+}
+
+.topbar-winbtn {
+  width: 46px;
+  height: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(191, 87, 86, 0.10);
-  border: 1px solid rgba(191, 87, 86, 0.28);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
   color: rgba(236, 217, 181, 0.78);
-  border-radius: 8px;
   cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.topbar-exit:hover {
-  background: rgba(191, 87, 86, 0.85);
-  border-color: rgba(191, 87, 86, 1);
+.topbar-winbtn svg { display: block; }
+
+.topbar-minimize:hover {
+  background: rgba(255, 255, 255, 0.10);
   color: #fff5e8;
-  transform: translateY(-1px);
 }
-.topbar-exit:active { transform: translateY(0); }
-.topbar-exit svg { display: block; }
+.topbar-minimize:active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.topbar-exit:hover {
+  background: #e81123;        /* Windows-red close button */
+  color: #fff;
+}
+.topbar-exit:active {
+  background: #c50f1f;
+  color: #fff;
+}
 
 /* ─── Auto-updater indicator ───
    Sits between the version badge and the profile avatar. Renders null
@@ -1505,40 +1534,68 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   opacity: 1;
 }
 
-/* Top-10 numbered ranking — oversized translucent numeral behind
-   the poster, classic Netflix Top-10 row look. Rewrite of v1.5.23:
-   the previous flex-stretch layout broke the 2:3 aspect ratio of
-   the image (height inherited from the 270px container, width
-   pinned at 175px → squashed). Now: container is the original
-   175px wide poster; the numeral is a separate sibling positioned
-   to the LEFT of it, so the poster keeps its natural aspect ratio
-   and the row's other geometry (hover scale, trailer overlay,
-   progress bar) keeps working unchanged.
-   Container still claims extra width via margin-left so the
-   numeral doesn't overlap with the previous card. */
-.row-poster--ranked {
-  margin-left: 80px;
+/* Top-10 numbered ranking — oversized translucent numeral that
+   peeks out to the LEFT of each poster, classic Netflix Top-10 look.
+   v1.6.2 rewrite: the v1.6.0 attempt put the numeral inside the
+   .row-poster button, which has overflow:hidden (needed for the
+   image's rounded corners) — so the numeral with left:-90px got
+   clipped to nothing. Solution: wrap the button in a new
+   .row-poster-cell div so the numeral can live as a SIBLING (not
+   a child) of the button, free to overflow the cell box.
+   The cell itself shares the button's flex sizing so the row keeps
+   gap/scroll behaviour unchanged. */
+.row-poster-cell {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-block;
 }
-.row-poster--ranked .row-poster-rank {
+.row-poster-cell--ranked {
+  margin-left: 80px;          /* room for the numeral to peek out */
+}
+.row-poster-cell--ranked .row-poster-rank {
   position: absolute;
-  left: -90px;            /* sits in the negative-margin gap */
-  bottom: -10px;
-  font-size: 200px;
+  left: -85px;                /* sits in the gap, partially under poster */
+  bottom: -18px;              /* hangs slightly below the poster baseline */
+  font-size: 220px;
   font-weight: 900;
   line-height: 0.85;
-  color: #0e0a1c;
-  -webkit-text-stroke: 3px rgba(255, 255, 255, 0.20);
+  color: #0b0712;
+  /* Heavy gold-tinged outline + soft black shadow for depth. The
+     stroke is what makes the numeral readable against any backdrop. */
+  -webkit-text-stroke: 4px rgba(212, 175, 122, 0.55);
   text-shadow:
-    -2px -2px 0 rgba(255, 255, 255, 0.30),
-    2px 2px 8px rgba(0, 0, 0, 0.85);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    0 0 24px rgba(212, 175, 122, 0.18),
+    4px 4px 14px rgba(0, 0, 0, 0.85);
+  font-family: var(--font-display, 'Inter'), -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-style: italic;          /* slight slant feels editorial */
+  letter-spacing: -0.05em;
   pointer-events: none;
   user-select: none;
-  z-index: 0;     /* behind the poster */
+  z-index: 1;                  /* above row background, below hover poster */
 }
-/* Top-10 row needs extra left padding so the leading "1" numeral
-   isn't clipped by the row's gradient edge. */
+/* The double-digit "10" needs extra room on the left so the "1"
+   doesn't crash into the previous card or get clipped by the row
+   edge. We target the LAST cell in the ranked row (which is rank 10
+   since the row is capped at 10 items). */
+.content-row--ranked .row-posters > .row-poster-cell--ranked:last-child {
+  margin-left: 110px;
+}
+.content-row--ranked .row-posters > .row-poster-cell--ranked:last-child .row-poster-rank {
+  left: -125px;
+  letter-spacing: -0.08em;
+}
+/* Top-10 row needs extra left padding so the leading "1" numeral on
+   the FIRST card isn't clipped by the section's left edge. */
 .content-row--ranked .row-posters { padding-left: 90px; }
+/* Allow the giant numerals to show outside the row's vertical box
+   without forcing a vertical scrollbar. overflow-x stays auto for
+   horizontal scrolling. */
+.content-row--ranked .row-posters {
+  overflow-y: visible;
+  /* Extra bottom padding so the numeral's -18px overflow has room
+     before the next row starts. */
+  padding-bottom: 1.5rem;
+}
 
 /* Watch-progress bar at the bottom of a card — Netflix-red strip
    showing how far the user got. Used by Continue Watching and
@@ -2868,7 +2925,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 /* ─── Responsive ─── */
 @media (max-width: 768px) {
-  .topbar { padding: 0 1rem; }
+  .topbar { padding: 0 0 0 1rem; }
   .topbar-nav { margin-left: 1rem; }
   .browse-nav { padding: 0.75rem 1rem; flex-wrap: wrap; }
   .search-box input { width: 160px; }

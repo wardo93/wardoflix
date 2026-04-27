@@ -779,6 +779,38 @@ ipcMain.handle('external-player:open', async (_e, url) => {
   }
 })
 
+// Custom window-control IPC. The app launches in (Electron) fullscreen
+// by default and there's no native title-bar X / minimize button — so
+// the topbar exposes synthetic ones that route through here. Also lets
+// the close button kill HTML5 fullscreen and Electron fullscreen first
+// so taskbar-restore behaves nicely on next launch.
+ipcMain.handle('window:minimize', () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+    // If we're in Electron fullscreen, dropping out of it before
+    // minimizing means the next restore comes back to a normal window
+    // instead of re-entering fullscreen (which on some Windows setups
+    // races with the minimize and produces a ghost frame).
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+    mainWindow.minimize()
+    return { ok: true }
+  } catch (e) {
+    log('[window:minimize] failed:', e?.message || e)
+    return { ok: false, reason: e?.message || 'failed' }
+  }
+})
+
+ipcMain.handle('window:close', () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+    mainWindow.close()
+    return { ok: true }
+  } catch (e) {
+    log('[window:close] failed:', e?.message || e)
+    return { ok: false, reason: e?.message || 'failed' }
+  }
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

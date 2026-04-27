@@ -119,7 +119,12 @@ function PosterCard({ item, type, onSelect, rank, progress }) {
       // Already fetched? Skip the network roundtrip.
       if (trailerKey) { setHover('playing'); return }
       try {
-        const r = await fetch(`/api/trailer-key/${type}/${item.id}`)
+        // Prefix with __API_BASE__ — required in packaged Electron
+        // where the renderer runs from file:// and a bare /api/...
+        // path resolves to file:///api/... and 404s. Same fix the
+        // DetailModal trailer iframe applied at line 2216.
+        const apiBase = (typeof window !== 'undefined' && window.__API_BASE__) || ''
+        const r = await fetch(`${apiBase}/api/trailer-key/${type}/${item.id}`)
         const data = await r.json().catch(() => ({}))
         if (data.key) {
           setTrailerKey(data.key)
@@ -138,9 +143,13 @@ function PosterCard({ item, type, onSelect, rank, progress }) {
   // a fetch into a dead component.
   useEffect(() => () => { if (dwellRef.current) clearTimeout(dwellRef.current) }, [])
 
-  return (
+  // The poster button itself. We render it inside a wrapper when ranked
+  // so the giant Top-10 numeral can live as a SIBLING (not a child) —
+  // the .row-poster button has overflow:hidden for image rounding, which
+  // would otherwise clip the numeral despite its negative left offset.
+  const card = (
     <button
-      className={`row-poster ${rank ? 'row-poster--ranked' : ''} ${hover === 'playing' ? 'row-poster--previewing' : ''}`}
+      className={`row-poster ${hover === 'playing' ? 'row-poster--previewing' : ''}`}
       onMouseEnter={enter}
       onMouseLeave={leave}
       onClick={() => onSelect({
@@ -157,9 +166,6 @@ function PosterCard({ item, type, onSelect, rank, progress }) {
         type,
       })}
     >
-      {/* Top-10 rank numeral. Clipped so the right edge of the
-          number tucks behind the poster, classic Netflix look. */}
-      {rank && <span className="row-poster-rank" aria-hidden="true">{rank}</span>}
       {item.poster_path ? (
         <img src={item.poster_path} alt="" loading="lazy" />
       ) : (
@@ -171,7 +177,7 @@ function PosterCard({ item, type, onSelect, rank, progress }) {
       {hover === 'playing' && trailerKey && (
         <iframe
           className="row-poster-trailer"
-          src={`/trailer?v=${trailerKey}&autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1`}
+          src={`${(typeof window !== 'undefined' && window.__API_BASE__) || ''}/trailer?v=${trailerKey}&autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1`}
           title="Trailer preview"
           allow="autoplay; encrypted-media"
           loading="lazy"
@@ -187,6 +193,17 @@ function PosterCard({ item, type, onSelect, rank, progress }) {
         {item.vote_average > 0 && <span className="row-poster-rating">★ {item.vote_average.toFixed(1)}</span>}
       </div>
     </button>
+  )
+
+  if (!rank) return card
+  // Top-10 row: wrap the button so the numeral can sit OUTSIDE the
+  // button's clipped box. Keeps the poster's natural 2:3 aspect ratio
+  // intact; the numeral peeks out to the left, classic Netflix look.
+  return (
+    <div className="row-poster-cell row-poster-cell--ranked">
+      <span className="row-poster-rank" aria-hidden="true">{rank}</span>
+      {card}
+    </div>
   )
 }
 
@@ -2104,16 +2121,27 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
               <p className="no-sources">No sources found. Paste a magnet link below.</p>
             )}
 
-            <div className="manual-stream">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleStream()}
-                placeholder="Paste magnet link or URL..."
-              />
-              <button className="btn btn-accent" onClick={() => handleStream()}>Stream</button>
-            </div>
+            {/* Manual-stream input — fallback for when auto-discovery
+                turns up nothing. Hidden when the modal already has
+                playable sources (TV episodes or movie torrents),
+                otherwise it crowds the cast row with a redundant input
+                bar that the user never wanted to see. Still surfaces
+                during loading-failure ("retry?" branch) so a frustrated
+                user has an immediate manual escape hatch. */}
+            {!torrentsLoading
+              && !(isTv && seasons.length > 0)
+              && !(showFlatList && torrents.length > 0) && (
+              <div className="manual-stream">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleStream()}
+                  placeholder="Paste magnet link or URL..."
+                />
+                <button className="btn btn-accent" onClick={() => handleStream()}>Stream</button>
+              </div>
+            )}
           </div>
 
           {details?.cast?.length > 0 && (
@@ -4715,6 +4743,70 @@ function App() {
     } catch {}
   }, [source])
 
+  // Tab-switch teardown. When the user clicks Browse (or the logo)
+  // while a stream is playing, the {tab === 'stream' && ...} JSX
+  // unmounts and the <video> element gets removed from the DOM.
+  // BUT: the videojs player instance lives on in playerRef, and
+  // Chromium happily keeps a detached <video> element playing
+  // audio in the background until pause()/dispose() is called. The
+  // user hears phantom audio while they scroll Browse for the next
+  // thing. Fix: when tab leaves 'stream', tear the stream down the
+  // same way the explicit Clear button does. Side benefit — no
+  // half-loaded ffmpeg pipe lingering on the server side either.
+  useEffect(() => {
+    if (tab === 'stream') return
+    if (!source && !playerRef.current) return
+    // Defer one tick so we don't fight a setSource()-triggered
+    // re-render that's still in flight.
+    queueMicrotask(() => {
+      try {
+        if (playerRef.current && !playerRef.current.isDisposed()) {
+          // Persist resume position before disposing — same
+          // best-effort save handleClear does.
+          try {
+            const t = playerRef.current.currentTime() || 0
+            const d = playerRef.current.duration()
+            if (playingMetadataRef.current && t > 0) {
+              saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
+            }
+          } catch {}
+          playerRef.current.pause?.()
+          playerRef.current.dispose()
+          playerRef.current = null
+        }
+      } catch {}
+      // Clear the rest of the stream state. Mirrors handleClear's
+      // setters but skips setTab(...) — the user already chose a
+      // tab, we're just catching up.
+      setSource(null)
+      setSourceType(null)
+      setPlayingMetadata(null)
+      setStreamProgress(null)
+      setStreamWarning('')
+      setError('')
+      setAvailableSubs([])
+      setSubOffset(0)
+      setSubPanelOpen(false)
+      setAudioTracks([])
+      setActiveAudioIdx(null)
+      setStreamInfoHash(null)
+      setStreamBaseUrl(null)
+      setStreamDuration(null)
+      setProbedVcodec(null)
+      setPlaybackError(null)
+      try { tracksAbortRef.current?.abort() } catch {}
+      try { streamAbortRef.current?.abort() } catch {}
+      try { subsAbortRef.current?.abort() } catch {}
+      streamAliveRef.current = false
+      streamProgressRef.current = null
+      if (progressRef.current) {
+        try { progressRef.current.close() } catch {}
+        progressRef.current = null
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
   const handleClear = useCallback(() => {
     // Exit fullscreen first — otherwise the viewer ends up staring at a
     // black/grey fullscreen canvas after the <video> is disposed below.
@@ -4816,36 +4908,72 @@ function App() {
             user has picked a profile — otherwise the gate covers the
             whole app anyway, so there's nothing to switch. */}
         <ProfileSwitcher profiles={profiles} activeProfile={activeProfile} />
-        {/* Exit — closes the BrowserWindow. In Electron the
-            window-all-closed handler in main.js calls app.quit().
-            Has a higher z-index than the player fullscreen overlay so
-            it stays reachable even when a title is fullscreened. */}
-        <button
-          className="topbar-exit"
-          onClick={() => {
-            try {
-              // Best-effort graceful persist before we die
-              if (playerRef.current && !playerRef.current.isDisposed()) {
-                const t = playerRef.current.currentTime() || 0
-                const d = playerRef.current.duration()
-                saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
-              }
-            } catch {}
-            try {
-              // Leave HTML5 fullscreen first so the close call isn't
-              // swallowed by the fullscreen layer.
-              if (document.fullscreenElement) document.exitFullscreen()
-            } catch {}
-            try { window.close() } catch {}
-          }}
-          title="Exit WardoFlix"
-          aria-label="Exit WardoFlix"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-            <line x1="6" y1="6" x2="18" y2="18" />
-            <line x1="18" y1="6" x2="6" y2="18" />
-          </svg>
-        </button>
+        {/* Window controls — Windows-style minimize + close, flush
+            with the top-right corner of the topbar. The app launches
+            in Electron fullscreen by default and there's no native
+            title bar, so these synthetic buttons are the only way to
+            send the app to the taskbar or quit without a keyboard
+            shortcut. Both route through preload IPC; outside Electron
+            (browser preview) we fall back to the no-op / window.close
+            paths so nothing crashes. */}
+        <div className="topbar-window-controls" aria-label="Window controls">
+          <button
+            className="topbar-winbtn topbar-minimize"
+            onClick={() => {
+              // Drop out of HTML5 fullscreen first — minimizing while
+              // the video element holds fullscreen leaves a black
+              // overlay on restore.
+              try { if (document.fullscreenElement) document.exitFullscreen() } catch {}
+              try {
+                if (window.wardoflixWindow?.minimize) {
+                  window.wardoflixWindow.minimize()
+                }
+              } catch {}
+            }}
+            title="Minimize"
+            aria-label="Minimize WardoFlix"
+          >
+            <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <line x1="2" y1="6.5" x2="10" y2="6.5" />
+            </svg>
+          </button>
+          <button
+            className="topbar-winbtn topbar-exit"
+            onClick={() => {
+              try {
+                // Best-effort graceful persist before we die
+                if (playerRef.current && !playerRef.current.isDisposed()) {
+                  const t = playerRef.current.currentTime() || 0
+                  const d = playerRef.current.duration()
+                  saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
+                }
+              } catch {}
+              try {
+                // Leave HTML5 fullscreen first so the close call isn't
+                // swallowed by the fullscreen layer.
+                if (document.fullscreenElement) document.exitFullscreen()
+              } catch {}
+              // Prefer the IPC path inside Electron — main.js drops
+              // out of native fullscreen before quitting, which avoids
+              // a flicker on the next launch. Fall back to window.close
+              // for the browser preview.
+              try {
+                if (window.wardoflixWindow?.close) {
+                  window.wardoflixWindow.close()
+                } else {
+                  window.close()
+                }
+              } catch {}
+            }}
+            title="Exit WardoFlix"
+            aria-label="Exit WardoFlix"
+          >
+            <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <line x1="2.5" y1="2.5" x2="9.5" y2="9.5" />
+              <line x1="9.5" y1="2.5" x2="2.5" y2="9.5" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <main className="main">
