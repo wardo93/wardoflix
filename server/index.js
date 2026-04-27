@@ -655,6 +655,82 @@ app.get('/api/details/:type/:tmdbId', async (req, res) => {
   }
 })
 
+// Cheap "just the trailer key" endpoint for hover previews. The full
+// /api/details fetch is ~10-20KB and includes cast/similar/external
+// IDs — overkill for "what trailer should I auto-play when the user
+// hovers this poster card?" Returns just {key} (YouTube ID) or
+// {key: null} if there's nothing. Cached aggressively because trailer
+// data for a title essentially never changes after release.
+const TRAILER_KEY_CACHE = new Map()
+const TRAILER_KEY_TTL = 24 * 60 * 60 * 1000 // 24h
+app.get('/api/trailer-key/:type/:tmdbId', async (req, res) => {
+  const { type, tmdbId } = req.params
+  if (!TMDB_API_KEY) return res.json({ key: null })
+  const mediaType = (type === 'tv' || type === 'series') ? 'tv' : 'movie'
+  const cacheKey = `${mediaType}:${tmdbId}`
+  const cached = TRAILER_KEY_CACHE.get(cacheKey)
+  if (cached && Date.now() - cached.t < TRAILER_KEY_TTL) {
+    return res.json({ key: cached.key })
+  }
+  try {
+    const data = await tmdbFetch(`${mediaType}/${tmdbId}/videos`, {})
+    const t = (data.results || [])
+      .filter((v) => v.site === 'YouTube' && ['Trailer', 'Teaser'].includes(v.type))
+      .sort((a, b) => {
+        if (a.type === 'Trailer' && b.type !== 'Trailer') return -1
+        if (b.type === 'Trailer' && a.type !== 'Trailer') return 1
+        return (a.official ? 0 : 1) - (b.official ? 0 : 1)
+      })[0]
+    const key = t?.key || null
+    TRAILER_KEY_CACHE.set(cacheKey, { key, t: Date.now() })
+    // Cap the cache so a long-lived server doesn't grow unbounded.
+    if (TRAILER_KEY_CACHE.size > 2000) {
+      const it = TRAILER_KEY_CACHE.keys()
+      for (let i = 0; i < 200; i++) TRAILER_KEY_CACHE.delete(it.next().value)
+    }
+    res.json({ key })
+  } catch (err) {
+    res.json({ key: null, error: err.message })
+  }
+})
+
+// Episode list with stills for a TV show season. Used by DetailModal
+// to render a Netflix-style picker with thumbnail + title per episode
+// instead of the bare "E01 / E02..." list. TMDB returns these via
+// the season endpoint; we cache aggressively because they don't
+// change after the season airs.
+const EPISODE_LIST_CACHE = new Map()
+const EPISODE_LIST_TTL = 6 * 60 * 60 * 1000 // 6h
+app.get('/api/episodes/:tmdbId/:season', async (req, res) => {
+  const { tmdbId, season } = req.params
+  if (!TMDB_API_KEY) return res.json({ episodes: [] })
+  const cacheKey = `${tmdbId}:${season}`
+  const cached = EPISODE_LIST_CACHE.get(cacheKey)
+  if (cached && Date.now() - cached.t < EPISODE_LIST_TTL) {
+    return res.json({ episodes: cached.episodes })
+  }
+  try {
+    const data = await tmdbFetch(`tv/${tmdbId}/season/${season}`, {})
+    const episodes = (data.episodes || []).map((e) => ({
+      number: e.episode_number,
+      name: e.name || `Episode ${e.episode_number}`,
+      overview: e.overview || '',
+      still: e.still_path ? `https://image.tmdb.org/t/p/w300${e.still_path}` : null,
+      airDate: e.air_date || null,
+      runtime: e.runtime || null,
+      rating: e.vote_average || 0,
+    }))
+    EPISODE_LIST_CACHE.set(cacheKey, { episodes, t: Date.now() })
+    if (EPISODE_LIST_CACHE.size > 500) {
+      const it = EPISODE_LIST_CACHE.keys()
+      for (let i = 0; i < 50; i++) EPISODE_LIST_CACHE.delete(it.next().value)
+    }
+    res.json({ episodes })
+  } catch (err) {
+    res.json({ episodes: [], error: err.message })
+  }
+})
+
 // ── Torrent search ──────────────────────────────────────────────
 function parseSeasonEpisode(filename) {
   const m = (filename || '').match(/S(\d{1,4})E(\d{1,4})/i) || (filename || '').match(/(\d{1,2})x(\d{1,4})/i)

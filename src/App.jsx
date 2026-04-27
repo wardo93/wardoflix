@@ -90,8 +90,108 @@ function HeroBanner({ items, type, onSelect, onStream }) {
   )
 }
 
+// ── Poster card with Netflix-style hover-trailer + rank + progress ──
+//
+// Each card:
+//  - Lazy-fetches the trailer YouTube key on first hover (cached on the
+//    server). After ~1.2s of continuous hover, an iframe slides in
+//    over the poster and starts the trailer muted (browser autoplay
+//    requires muted). Leaves on mouse-out, cancels if the user moves
+//    away before the dwell threshold.
+//  - Optional `rank` (1-10): renders an oversized numeral behind the
+//    poster, Netflix Top-10 style. The row decides which cards get
+//    one.
+//  - Optional `progress` (0-1): renders a thin red progress bar at
+//    the bottom of the card, showing where the user is in the title.
+//    Used by the Continue Watching row.
+function PosterCard({ item, type, onSelect, rank, progress }) {
+  const [hover, setHover] = useState('idle') // idle | pending | playing
+  const [trailerKey, setTrailerKey] = useState(null)
+  const dwellRef = useRef(null)
+  // Suppress hover-preview entirely when the user has the row in
+  // motion (drag-scroll or wheel-scroll) — otherwise every card
+  // briefly sees a mouseenter as posters fly past, and we'd kick off
+  // 30 trailer fetches in a panel-swipe.
+  const enter = () => {
+    if (hover !== 'idle') return
+    setHover('pending')
+    dwellRef.current = setTimeout(async () => {
+      // Already fetched? Skip the network roundtrip.
+      if (trailerKey) { setHover('playing'); return }
+      try {
+        const r = await fetch(`/api/trailer-key/${type}/${item.id}`)
+        const data = await r.json().catch(() => ({}))
+        if (data.key) {
+          setTrailerKey(data.key)
+          setHover('playing')
+        } else {
+          setHover('idle') // no trailer for this title — never bother again
+        }
+      } catch { setHover('idle') }
+    }, 1200)
+  }
+  const leave = () => {
+    if (dwellRef.current) { clearTimeout(dwellRef.current); dwellRef.current = null }
+    setHover('idle')
+  }
+  // Cleanup on unmount so a card scrolling out mid-dwell doesn't fire
+  // a fetch into a dead component.
+  useEffect(() => () => { if (dwellRef.current) clearTimeout(dwellRef.current) }, [])
+
+  return (
+    <button
+      className={`row-poster ${rank ? 'row-poster--ranked' : ''} ${hover === 'playing' ? 'row-poster--previewing' : ''}`}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      onClick={() => onSelect({
+        id: item.id,
+        title: item.title || item.name,
+        name: item.name || null,
+        poster: item.poster_path,
+        backdrop: item.backdrop_path,
+        overview: item.overview,
+        date: item.release_date || item.first_air_date,
+        release_date: item.release_date || null,
+        first_air_date: item.first_air_date || null,
+        rating: item.vote_average,
+        type,
+      })}
+    >
+      {/* Top-10 rank numeral. Clipped so the right edge of the
+          number tucks behind the poster, classic Netflix look. */}
+      {rank && <span className="row-poster-rank" aria-hidden="true">{rank}</span>}
+      {item.poster_path ? (
+        <img src={item.poster_path} alt="" loading="lazy" />
+      ) : (
+        <div className="poster-placeholder">{(item.title || item.name || '?')[0]}</div>
+      )}
+      {/* Hover trailer overlay. autoplay+mute is required by Chromium
+          for unattended starts; the embed drops controls and chrome
+          so the preview feels integrated rather than YouTube-y. */}
+      {hover === 'playing' && trailerKey && (
+        <iframe
+          className="row-poster-trailer"
+          src={`/trailer?v=${trailerKey}&autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1`}
+          title="Trailer preview"
+          allow="autoplay; encrypted-media"
+          loading="lazy"
+        />
+      )}
+      {typeof progress === 'number' && progress > 0 && (
+        <div className="row-poster-progress" aria-hidden="true">
+          <div className="row-poster-progress-bar" style={{ width: `${Math.min(100, progress * 100)}%` }} />
+        </div>
+      )}
+      <div className="row-poster-info">
+        <span className="row-poster-title">{item.title || item.name}</span>
+        {item.vote_average > 0 && <span className="row-poster-rating">★ {item.vote_average.toFixed(1)}</span>}
+      </div>
+    </button>
+  )
+}
+
 // ── Content Row (horizontal scroll) ─────────────────────────────
-function ContentRow({ title, url, type, onSelect }) {
+function ContentRow({ title, url, type, onSelect, showRanking = false }) {
   const [items, setItems] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [attempt, setAttempt] = useState(0) // bump to force refetch
@@ -156,8 +256,12 @@ function ContentRow({ title, url, type, onSelect }) {
 
   if (!loaded || items.length === 0) return null
 
+  // When the row is ranked (Top 10), cap to 10 — the numeral wouldn't
+  // mean anything past that.
+  const displayItems = showRanking ? items.slice(0, 10) : items
+
   return (
-    <div className="content-row">
+    <div className={`content-row ${showRanking ? 'content-row--ranked' : ''}`}>
       <h3 className="row-title">{title}</h3>
       <div className="row-container">
         {canScrollLeft && (
@@ -166,34 +270,14 @@ function ContentRow({ title, url, type, onSelect }) {
           </button>
         )}
         <div className="row-posters" ref={rowRef}>
-          {items.map((item) => (
-            <button
+          {displayItems.map((item, i) => (
+            <PosterCard
               key={item.id}
-              className="row-poster"
-              onClick={() => onSelect({
-                id: item.id,
-                title: item.title || item.name,
-                name: item.name || null,
-                poster: item.poster_path,
-                backdrop: item.backdrop_path,
-                overview: item.overview,
-                date: item.release_date || item.first_air_date,
-                release_date: item.release_date || null,
-                first_air_date: item.first_air_date || null,
-                rating: item.vote_average,
-                type,
-              })}
-            >
-              {item.poster_path ? (
-                <img src={item.poster_path} alt="" loading="lazy" />
-              ) : (
-                <div className="poster-placeholder">{(item.title || item.name || '?')[0]}</div>
-              )}
-              <div className="row-poster-info">
-                <span className="row-poster-title">{item.title || item.name}</span>
-                {item.vote_average > 0 && <span className="row-poster-rating">★ {item.vote_average.toFixed(1)}</span>}
-              </div>
-            </button>
+              item={item}
+              type={type}
+              onSelect={onSelect}
+              rank={showRanking ? i + 1 : null}
+            />
           ))}
         </div>
         {canScrollRight && (
@@ -367,6 +451,25 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
+              {/* Resume-progress bar — Netflix/Hulu-style red band at the
+                  bottom of the card showing how far you got last time.
+                  Read directly from the resume map by the same key the
+                  player uses, so the displayed % matches what the
+                  player will actually resume to. */}
+              {(() => {
+                try {
+                  const map = loadResumeMap()
+                  const k = resumeKey({ id: entry.id, title: entry.title, season: entry.season, episode: entry.episode })
+                  const r = k && map[k]
+                  if (!r || !r.t || !r.d) return null
+                  const pct = Math.min(100, Math.max(0, (r.t / r.d) * 100))
+                  return (
+                    <div className="row-poster-progress" aria-hidden="true">
+                      <div className="row-poster-progress-bar" style={{ width: `${pct}%` }} />
+                    </div>
+                  )
+                } catch { return null }
+              })()}
               <div className="row-poster-info">
                 <span className="row-poster-title">{entry.title}</span>
                 {entry.season && entry.episode && (
@@ -1061,8 +1164,8 @@ function ForYou({ profile, onSelect, onPlayHistory }) {
             on a brand-new profile before they've picked anything. */}
         {!hasAnySignal && (
           <>
-            <ContentRow title="Trending Movies" url={`/api/catalog/movies?category=trending`} type="movies" onSelect={onSelect} />
-            <ContentRow title="Trending Series" url={`/api/catalog/tv?category=trending`} type="tv" onSelect={onSelect} />
+            <ContentRow title="Top 10 Movies This Week" url={`/api/catalog/movies?category=trending`} type="movies" onSelect={onSelect} showRanking />
+            <ContentRow title="Top 10 Series This Week" url={`/api/catalog/tv?category=trending`} type="tv" onSelect={onSelect} showRanking />
           </>
         )}
       </div>
@@ -1193,6 +1296,22 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
   const debouncedSearch = useDebounce(searchQuery, 400)
 
   useEffect(() => { setSearchQuery('') }, [view, type])
+
+  // Listen for cross-component search triggers — currently fired by
+  // clicking a cast member in the DetailModal. Setting the query
+  // through this path also flips the view away from any sidebar
+  // category so the search results aren't masked.
+  useEffect(() => {
+    const onTrigger = (e) => {
+      const q = e?.detail?.query
+      if (typeof q !== 'string') return
+      setSearchQuery(q)
+      setView('home')
+      setActiveGenre(null)
+    }
+    window.addEventListener('wardoflix:search-for', onTrigger)
+    return () => window.removeEventListener('wardoflix:search-for', onTrigger)
+  }, [])
 
   // Fetch genres for the current type (drives sidebar list).
   // Retries twice if the first response is empty — covers the case where
@@ -1345,8 +1464,8 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
             <HeroBanner items={heroItems} type="movies" onSelect={onSelectTitle} />
             <div className="rows-section">
               <ContinueWatchingRow onPlay={onPlayHistory} onInfo={onSelectTitle} />
-              <ContentRow title="Trending Movies" url={`/api/catalog/movies?category=trending`} type="movies" onSelect={onSelectTitle} />
-              <ContentRow title="Trending Series" url={`/api/catalog/tv?category=trending`} type="tv" onSelect={onSelectTitle} />
+              <ContentRow title="Top 10 Movies This Week" url={`/api/catalog/movies?category=trending`} type="movies" onSelect={onSelectTitle} showRanking />
+              <ContentRow title="Top 10 Series This Week" url={`/api/catalog/tv?category=trending`} type="tv" onSelect={onSelectTitle} showRanking />
               <ContentRow title="Popular Movies" url={`/api/catalog/movies?category=popular`} type="movies" onSelect={onSelectTitle} />
               <ContentRow title="Popular Series" url={`/api/catalog/tv?category=popular`} type="tv" onSelect={onSelectTitle} />
               <ContentRow title="Top Rated Movies" url={`/api/catalog/movies?category=top`} type="movies" onSelect={onSelectTitle} />
@@ -1470,6 +1589,27 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
   const [bySeason, setBySeason] = useState({})
   const [seasons, setSeasons] = useState([])
   const [selectedSeason, setSelectedSeason] = useState('1')
+  // Episode thumbnails (still images + name + air date) per selected
+  // season. Fetched from /api/episodes/:tmdbId/:season on demand —
+  // server-side cached for 6h so changing season is fast after the
+  // first hit. Indexed by episode number for O(1) lookup in the
+  // existing episode-button render loop.
+  const [episodeStills, setEpisodeStills] = useState({})
+  useEffect(() => {
+    if (!isTv || !item?.id || !selectedSeason) { setEpisodeStills({}); return }
+    let cancelled = false
+    fetch(`/api/episodes/${item.id}/${selectedSeason}`)
+      .then((r) => r.ok ? r.json() : { episodes: [] })
+      .then((d) => {
+        if (cancelled) return
+        const map = {}
+        for (const e of (d.episodes || [])) map[e.number] = e
+        setEpisodeStills(map)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, selectedSeason, isTv])
   const [torrentsLoading, setTorrentsLoading] = useState(true)
   // Rich details: trailer, cast, similar titles (Stremio-parity)
   const [details, setDetails] = useState(null)
@@ -1814,27 +1954,41 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                           else handleUnavailableEpisode({ season: Number(t.season || selectedSeason), episode: epNum })
                         }}
                       >
-                        <span className="source-ep">E{String(epNum).padStart(2, '0')}</span>
-                        {watched && (
-                          <span className="source-watched" title="Watched" aria-label="Watched">
-                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              <polyline points="20 6 9 17 4 12" />
-                            </svg>
-                          </span>
+                        {/* Episode still — TMDB-provided thumbnail.
+                            Falls back to a gradient placeholder when
+                            the episode hasn't aired yet (no still
+                            published) or the show is too obscure. */}
+                        {episodeStills[epNum]?.still ? (
+                          <img className="source-ep-still" src={episodeStills[epNum].still} alt="" loading="lazy" />
+                        ) : (
+                          <div className="source-ep-still source-ep-still--placeholder" />
                         )}
-                        {hasMagnet && <span className="source-quality">{t.quality}</span>}
-                        {hasMagnet && (
-                          <span
-                            className={`source-seeds source-seeds--${seedHealth(t.seeds)}`}
-                            title={seedHealthLabel(t.seeds)}
-                          >
-                            <span className="source-seeds-dot" />
-                            {t.seeds || 0} seeds
-                          </span>
-                        )}
-                        {hasMagnet && t.size && <span className="source-size">{t.size}</span>}
-                        {!hasMagnet && !isResolving && <span className="source-quality source-quality--ghost">Click to play</span>}
-                        {isResolving && <span className="source-quality source-quality--ghost">Finding source…</span>}
+                        <div className="source-ep-meta">
+                          <span className="source-ep">E{String(epNum).padStart(2, '0')}</span>
+                          {episodeStills[epNum]?.name && (
+                            <span className="source-ep-name">{episodeStills[epNum].name}</span>
+                          )}
+                          {watched && (
+                            <span className="source-watched" title="Watched" aria-label="Watched">
+                              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            </span>
+                          )}
+                          {hasMagnet && <span className="source-quality">{t.quality}</span>}
+                          {hasMagnet && (
+                            <span
+                              className={`source-seeds source-seeds--${seedHealth(t.seeds)}`}
+                              title={seedHealthLabel(t.seeds)}
+                            >
+                              <span className="source-seeds-dot" />
+                              {t.seeds || 0} seeds
+                            </span>
+                          )}
+                          {hasMagnet && t.size && <span className="source-size">{t.size}</span>}
+                          {!hasMagnet && !isResolving && <span className="source-quality source-quality--ghost">Click to play</span>}
+                          {isResolving && <span className="source-quality source-quality--ghost">Finding source…</span>}
+                        </div>
                       </button>
                     )
                   }) : <p className="no-sources">No episodes for this season.</p>}
@@ -1890,7 +2044,22 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
               <h3>Cast</h3>
               <div className="cast-rail">
                 {details.cast.map((c) => (
-                  <div key={c.id} className="cast-card">
+                  <button
+                    key={c.id}
+                    className="cast-card"
+                    title={`Search for other titles with ${c.name}`}
+                    onClick={() => {
+                      // Click an actor → trigger a search for their
+                      // name. The Browse page reads the global search
+                      // query and renders matching titles, so this
+                      // surfaces every co-starring movie/show TMDB has
+                      // for the actor without a dedicated filmography
+                      // endpoint. Closes the current modal so the
+                      // search results aren't hidden behind it.
+                      window.dispatchEvent(new CustomEvent('wardoflix:search-for', { detail: { query: c.name } }))
+                      onClose()
+                    }}
+                  >
                     <div className="cast-avatar">
                       {c.profile
                         ? <img src={c.profile} alt={c.name} loading="lazy" />
@@ -1898,7 +2067,7 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                     </div>
                     <div className="cast-name">{c.name}</div>
                     <div className="cast-char">{c.character}</div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>

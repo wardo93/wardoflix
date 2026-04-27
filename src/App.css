@@ -1485,6 +1485,86 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   box-shadow: 0 12px 40px -8px rgba(0, 0, 0, 0.7), 0 0 0 2px rgba(255, 255, 255, 0.15);
 }
 
+/* Hover-trailer iframe overlay — fills the card while a YouTube
+   trailer plays muted. Pointer-events:none so the click still goes
+   to the surrounding button and selects the title (rather than
+   getting swallowed by the iframe). Faded in for a beat so the
+   transition doesn't feel jarring. */
+.row-poster-trailer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease-in;
+  z-index: 1;
+}
+.row-poster--previewing .row-poster-trailer {
+  opacity: 1;
+}
+
+/* Top-10 numbered ranking — oversized translucent numeral behind
+   the poster, classic Netflix Top-10 row look. Text-shadow gives the
+   number a "carved" depth so it reads against any backdrop. */
+.row-poster--ranked {
+  width: 270px; /* extra width to accommodate the numeral */
+  display: flex;
+  align-items: stretch;
+  background: transparent;
+  overflow: visible;
+}
+.row-poster--ranked img,
+.row-poster--ranked .poster-placeholder {
+  width: 175px;
+  margin-left: auto;
+  border-radius: var(--radius);
+  position: relative;
+  z-index: 2;
+}
+.row-poster-rank {
+  position: absolute;
+  left: -8px;
+  bottom: -8px;
+  font-size: 220px;
+  font-weight: 900;
+  line-height: 0.85;
+  color: rgba(0, 0, 0, 0.85);
+  -webkit-text-stroke: 3px rgba(255, 255, 255, 0.15);
+  text-shadow:
+    -2px -2px 0 rgba(255, 255, 255, 0.25),
+    2px 2px 8px rgba(0, 0, 0, 0.9);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+}
+.content-row--ranked .row-poster-info { padding-left: 95px; }
+.row-poster--ranked .row-poster-trailer {
+  left: auto;
+  right: 0;
+  width: 175px;
+}
+
+/* Watch-progress bar at the bottom of a card — Netflix-red strip
+   showing how far the user got. Used by Continue Watching and
+   anywhere else we want to surface resume progress. */
+.row-poster-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 38px; /* sits above the title strip */
+  height: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 2;
+}
+.row-poster-progress-bar {
+  height: 100%;
+  background: var(--accent, #c9a96e);
+  transition: width 0.3s ease;
+}
+
 .row-poster img {
   width: 100%;
   height: 100%;
@@ -1813,14 +1893,53 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 
 .episodes-list {
-  max-height: 320px;
+  max-height: 480px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.5rem;
   margin-bottom: 1rem;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+
+/* Episode still + name row — Netflix-style picker. Image left,
+   metadata right. Falls back to a gradient placeholder when the
+   episode still hasn't been published yet. */
+.episodes-list .source-btn {
+  align-items: flex-start;
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+.source-ep-still {
+  width: 158px;
+  height: 88px;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: rgba(255,255,255,0.04);
+}
+.source-ep-still--placeholder {
+  background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+}
+.source-ep-meta {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.9rem;
+  min-width: 0;
+}
+.source-ep-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sources-list {
@@ -3242,6 +3361,15 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   align-items: center;
   text-align: center;
   scroll-snap-align: start;
+  /* Was a div; now a button (clickable for filmography search). Reset
+     the default button chrome so it visually matches the original
+     div, then add a cursor hint so it reads as interactive. */
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 .cast-avatar {
   width: 80px;
