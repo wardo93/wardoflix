@@ -1662,27 +1662,7 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
   const [bySeason, setBySeason] = useState({})
   const [seasons, setSeasons] = useState([])
   const [selectedSeason, setSelectedSeason] = useState('1')
-  // Episode thumbnails (still images + name + air date) per selected
-  // season. Fetched from /api/episodes/:tmdbId/:season on demand —
-  // server-side cached for 6h so changing season is fast after the
-  // first hit. Indexed by episode number for O(1) lookup in the
-  // existing episode-button render loop.
   const [episodeStills, setEpisodeStills] = useState({})
-  useEffect(() => {
-    if (!isTv || !item?.id || !selectedSeason) { setEpisodeStills({}); return }
-    let cancelled = false
-    fetch(`/api/episodes/${item.id}/${selectedSeason}`)
-      .then((r) => r.ok ? r.json() : { episodes: [] })
-      .then((d) => {
-        if (cancelled) return
-        const map = {}
-        for (const e of (d.episodes || [])) map[e.number] = e
-        setEpisodeStills(map)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id, selectedSeason, isTv])
   const [torrentsLoading, setTorrentsLoading] = useState(true)
   // Rich details: trailer, cast, similar titles (Stremio-parity)
   const [details, setDetails] = useState(null)
@@ -1705,6 +1685,30 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
   // grid, and stale history entries where the field sometimes drops.
   const itemType = inferType(item)
   const isTv = itemType === 'tv'
+
+  // Episode thumbnails (still images + name + air date) per selected
+  // season. Fetched from /api/episodes/:tmdbId/:season on demand —
+  // server-side cached for 6h so changing season is fast after the
+  // first hit. Indexed by episode number for O(1) lookup in the
+  // existing episode-button render loop. Declared AFTER isTv so the
+  // effect's deps array doesn't TDZ at module evaluation (which is
+  // exactly the bug v1.6.0 shipped with — black screen on every
+  // launch because this useEffect ran before isTv was initialised).
+  useEffect(() => {
+    if (!isTv || !item?.id || !selectedSeason) { setEpisodeStills({}); return }
+    let cancelled = false
+    fetch(`/api/episodes/${item.id}/${selectedSeason}`)
+      .then((r) => r.ok ? r.json() : { episodes: [] })
+      .then((d) => {
+        if (cancelled) return
+        const map = {}
+        for (const e of (d.episodes || [])) map[e.number] = e
+        setEpisodeStills(map)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, selectedSeason, isTv])
 
   // Watched flags live in localStorage and change out-of-band (when
   // the player hits the end of an episode). Bump a tick on the
