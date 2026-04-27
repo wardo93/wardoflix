@@ -771,6 +771,69 @@ function useUpdater() {
   return { status, check, install, hasApi }
 }
 
+// Central update modal — appears when an update has finished
+// downloading. Replaces the previous "small badge in the corner"
+// flow with something the user actually notices. One button installs
+// + relaunches; the second dismisses for this session (it'll come
+// back next launch if the update is still pending). Designed to be
+// non-blocking — it's centered and modal-like but the user can
+// click outside or hit Esc to defer.
+function UpdateAvailableModal() {
+  const { status, install } = useUpdater()
+  const [dismissed, setDismissed] = useState(false)
+  // Reset dismissal when a NEW update arrives (state goes from
+  // downloaded with version A → downloaded with version B). Without
+  // this, dismissing 1.5.23 would silently mute 1.5.24's prompt.
+  const lastVersionRef = useRef(null)
+  useEffect(() => {
+    if (status?.state === 'downloaded' && status.version !== lastVersionRef.current) {
+      lastVersionRef.current = status.version
+      setDismissed(false)
+    }
+  }, [status?.state, status?.version])
+  // Esc dismisses for this session.
+  useEffect(() => {
+    if (dismissed || status?.state !== 'downloaded') return
+    const onKey = (e) => { if (e.key === 'Escape') setDismissed(true) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dismissed, status?.state])
+
+  if (status?.state !== 'downloaded') return null
+  if (dismissed) return null
+  return (
+    <div className="wf-update-backdrop" onClick={() => setDismissed(true)}>
+      <div className="wf-update-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={`Update v${status.version || ''} ready`}>
+        <div className="wf-update-icon">
+          <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M3 21v-5h5" />
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+          </svg>
+        </div>
+        <h2 className="wf-update-title">Update ready</h2>
+        <p className="wf-update-version">WardoFlix v{status.version || '?'} is downloaded and ready to install.</p>
+        <p className="wf-update-blurb">The app will restart and pick up exactly where you are. Your library, history, and resume positions all carry over.</p>
+        <div className="wf-update-actions">
+          <button
+            className="wf-update-btn wf-update-btn--primary"
+            onClick={() => { install() }}
+          >
+            Install &amp; restart
+          </button>
+          <button
+            className="wf-update-btn"
+            onClick={() => setDismissed(true)}
+          >
+            Later
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function UpdaterIndicator() {
   const { status, check, install, hasApi } = useUpdater()
   const [open, setOpen] = useState(false)
@@ -1470,6 +1533,16 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
               <ContentRow title="Popular Series" url={`/api/catalog/tv?category=popular`} type="tv" onSelect={onSelectTitle} />
               <ContentRow title="Top Rated Movies" url={`/api/catalog/movies?category=top`} type="movies" onSelect={onSelectTitle} />
               <ContentRow title="Top Rated Series" url={`/api/catalog/tv?category=top`} type="tv" onSelect={onSelectTitle} />
+              {/* Themed franchise rows — Disney+ / HBO-style hubs.
+                  Each pulls a TMDB collection by id; sorted newest-
+                  first within the franchise so users see the latest
+                  release at the front of the row. */}
+              <ContentRow title="Marvel Cinematic Universe" url={`/api/collection/86311`} type="movies" onSelect={onSelectTitle} />
+              <ContentRow title="The Lord of the Rings & The Hobbit" url={`/api/collection/119`} type="movies" onSelect={onSelectTitle} />
+              <ContentRow title="Star Wars Saga" url={`/api/collection/10`} type="movies" onSelect={onSelectTitle} />
+              <ContentRow title="Mission: Impossible" url={`/api/collection/87359`} type="movies" onSelect={onSelectTitle} />
+              <ContentRow title="The Dark Knight Trilogy" url={`/api/collection/263`} type="movies" onSelect={onSelectTitle} />
+              <ContentRow title="John Wick" url={`/api/collection/404609`} type="movies" onSelect={onSelectTitle} />
             </div>
           </>
         ) : view === 'genre' && activeGenre ? (
@@ -4943,6 +5016,7 @@ function App() {
         />
       )}
 
+      <UpdateAvailableModal />
       <ToastHost />
 
       {/* Subtitle style sheet — applied globally so video.js text-track

@@ -572,6 +572,44 @@ app.get('/api/catalog/:type', async (req, res) => {
   }
 })
 
+// ── TMDB collection lookup ──────────────────────────────────────
+// Themed-row backing endpoint. TMDB collection IDs hand-curated by
+// the owner (Marvel, Pixar, Star Wars, etc.) — we just proxy the
+// /collection/{id} fetch through our existing TMDB cache so each
+// row is one HTTP round-trip from the client.
+app.get('/api/collection/:id', async (req, res) => {
+  const { id } = req.params
+  if (!TMDB_API_KEY) return res.json({ results: [] })
+  try {
+    const data = await tmdbFetch(`collection/${id}`)
+    const results = (data.parts || [])
+      .filter((p) => p.poster_path)
+      .sort((a, b) => {
+        // Newest first within the collection — typically what users
+        // care about when browsing a franchise.
+        const ad = a.release_date || a.first_air_date || '0000'
+        const bd = b.release_date || b.first_air_date || '0000'
+        return bd.localeCompare(ad)
+      })
+      .map((p) => ({
+        id: p.id,
+        title: p.title || p.name,
+        name: p.name || p.title,
+        poster_path: p.poster_path ? `${TMDB_IMAGE}${p.poster_path}` : null,
+        backdrop_path: p.backdrop_path ? `${TMDB_BACKDROP}${p.backdrop_path}` : null,
+        overview: p.overview || '',
+        release_date: p.release_date || null,
+        first_air_date: p.first_air_date || null,
+        vote_average: p.vote_average || 0,
+        genre_ids: p.genre_ids || [],
+      }))
+    res.json({ results, name: data.name || '', overview: data.overview || '' })
+  } catch (err) {
+    logThrottled('error', `collection:${id}:${err.message}`, `Collection ${id}: ${err.message}`)
+    res.json({ results: [], stale: true, error: err.message })
+  }
+})
+
 // ── TMDB: get external IDs (IMDb) for a title ───────────────────
 async function getImdbId(tmdbId, type) {
   if (!TMDB_API_KEY || !tmdbId) return null
@@ -2519,19 +2557,29 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // automatically — it doesn't hard-fail at probesize-exhausted, it
   // just falls back to its built-in heuristics.
   const ffmpegArgs = [
+    // Hardware-accelerated decode. -hwaccel auto lets ffmpeg pick the
+    // best available accelerator on the user's machine: NVDEC on
+    // NVIDIA, QSV on Intel, D3D11VA / DXVA2 as Windows fallbacks. For
+    // 10-bit HEVC at 1080p+ this is a 5-10× speedup over software
+    // decode and frees up the CPU for libx264 to encode faster. If
+    // hwaccel is unavailable for the specific codec, ffmpeg
+    // transparently falls back to software, so it's safe to leave on
+    // unconditionally.
+    //
+    // Threads N: libx264 with -preset ultrafast benefits from all
+    // available cores. Defaulting to 0 (auto) lets libx264 pick based
+    // on the host's logical CPU count; previous code accepted
+    // libx264's default which was conservative on Windows.
+    '-hwaccel', 'auto',
+    '-threads', '0',
     ...(seekSec > 0 ? ['-ss', String(seekSec)] : []),
-    '-analyzeduration', '1000000',  // 1 second instead of 10
-    '-probesize', '1000000',        // 1 MB instead of 10
+    '-analyzeduration', '1000000',  // 1 second
+    '-probesize', '1000000',        // 1 MB
     // Reconnect on transient read errors from WebTorrent's stream server
     // (e.g. a piece gap when the swarm is still filling).
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
-    // Tell the input demuxer to start producing output as soon as it
-    // has frames, instead of buffering for "smooth" playback. We don't
-    // care about smooth on the demux side — the player buffers
-    // downstream. nobuffer + flush_packets together bring the
-    // first-frame latency down by another second or two on slow inputs.
     '-fflags', '+nobuffer+flush_packets+genpts',
     '-i', inputUrl,
     ...audioMap,
