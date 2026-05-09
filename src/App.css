@@ -3,46 +3,57 @@
    ═══════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════
-   WARDOFLIX PALETTE — Midnight & Rose-Gold
-   Deep violet-black base with warm rose-gold primary,
-   rich oxblood secondary, ivory text. Cinematic and luxurious —
-   closer to IMAX Experience / Apple TV+ than the previous
-   graphite-champagne scheme.
+   WARDOFLIX PALETTE — Hearth & Amber (v1.7.3)
+   Warm walnut-espresso base with amber/honey primary, sienna-ember
+   secondary, warm cream text. The vibe: a cinema lobby in a cabin
+   at golden hour — wood panels, brass fittings, firelight glow.
+   Replaces the v1.7.0 violet-and-rose-gold scheme.
    ═══════════════════════════════════════════════════════════════ */
 :root {
-  /* Backgrounds — deep ink with faint violet undertone */
-  --bg: #0a0812;
-  --bg-deep: #050309;
-  --bg-card: rgba(22, 18, 30, 0.85);
-  --bg-elevated: rgba(30, 24, 40, 0.96);
-  --bg-surface: #14101c;
+  /* Backgrounds — deep walnut with warm undertone (think:
+     stained oak after dusk). Even the "deep" variants stay on the
+     warm side of black so the whole UI reads as lit by firelight,
+     not moonlight. */
+  --bg: #120a04;
+  --bg-deep: #0a0502;
+  --bg-card: rgba(34, 24, 16, 0.86);
+  --bg-elevated: rgba(46, 32, 22, 0.96);
+  --bg-surface: #1a1108;
 
-  /* Primary accent — Warm rose-gold (richer, more premium than champagne) */
-  --accent: #d4af7a;
-  --accent-hover: #ecc998;
-  --accent-deep: #8a6a42;
-  --accent-glow: rgba(212, 175, 122, 0.34);
-  --accent-glow-strong: rgba(212, 175, 122, 0.58);
+  /* Primary accent — Amber gold. Rich honey at rest, brighter
+     ember on hover. The deep variant for shadows + pressed states.
+     Each value chosen so contrast against --text passes WCAG AA. */
+  --accent: #e8a838;
+  --accent-hover: #ffc266;
+  --accent-deep: #a06814;
+  --accent-glow: rgba(232, 168, 56, 0.36);
+  --accent-glow-strong: rgba(255, 194, 102, 0.56);
 
-  /* Secondary accent — Deep oxblood (cinematic, for highlights/alerts) */
-  --teal: #b86a6a;            /* kept var name for backcompat */
-  --teal-glow: rgba(184, 106, 106, 0.30);
-  --oxblood: #8a2f3c;
-  --oxblood-soft: #bf5756;
+  /* Secondary accent — Sienna ember (warm reddish-orange) for
+     emphasis, danger states, and the "second light" in gradients.
+     Replaces the cold oxblood/teal pair from the previous scheme;
+     names kept for back-compat with existing class references. */
+  --teal: #c45a3a;            /* kept var name for backcompat — sienna ember */
+  --teal-glow: rgba(196, 90, 58, 0.32);
+  --oxblood: #7a2a1a;         /* deep mahogany */
+  --oxblood-soft: #d96b3e;    /* warm sienna highlight */
 
-  /* Status */
-  --green: #7ec08f;
-  --gold: #d4af7a;
-  --rose: #bf5756;
+  /* Status — earthy, never neon. Sage green for success/seeded,
+     amber for info, sienna for warnings. */
+  --green: #88b06a;
+  --gold: #e8a838;
+  --rose: #d96b3e;
 
-  /* Text — warm ivory, never pure white */
-  --text: #f4eedf;
-  --text-muted: rgba(244, 238, 223, 0.68);
-  --text-dim: rgba(244, 238, 223, 0.38);
+  /* Text — warm cream like aged paper. Never pure white; would
+     read clinical against the wood/amber backdrop. */
+  --text: #f8eed3;
+  --text-muted: rgba(248, 238, 211, 0.70);
+  --text-dim: rgba(248, 238, 211, 0.42);
 
-  /* Borders — subtle, rose-gold tinted */
-  --border: rgba(212, 175, 122, 0.10);
-  --border-strong: rgba(212, 175, 122, 0.26);
+  /* Borders — subtle, amber-tinted. The "strong" variant is what
+     hover states and active selections lift to. */
+  --border: rgba(232, 168, 56, 0.12);
+  --border-strong: rgba(232, 168, 56, 0.32);
 
   --radius: 8px;
   --radius-lg: 12px;
@@ -51,6 +62,11 @@
   --font-mono: 'JetBrains Mono', monospace;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Cozy easing — softer + slightly slower start than the standard
+     ease. Used for hover lifts on poster cards and modal entrances
+     where the v1.7.3 warm direction prefers "settling into place"
+     over "snapping in". */
+  --ease-cozy: cubic-bezier(0.22, 0.7, 0.16, 1);
 
   /* ── Canonical z-index scale ────────────────────────────────
      Purely additive — legacy hard-coded values (z-index: 50, 100,
@@ -106,7 +122,11 @@
 }
 
 body {
-  background: radial-gradient(ellipse 120% 80% at 50% 0%, #14102a 0%, #09060f 60%, #050309 100%) !important;
+  /* Warm walnut base — the "outside" of the room. Faint amber glow
+     up top simulates a hidden lamp casting onto the page from
+     above-screen; the mid + bottom decay into deeper espresso so
+     the eye drifts toward the content. */
+  background: radial-gradient(ellipse 120% 80% at 50% 0%, #2a1808 0%, #140a04 55%, #0a0502 100%) !important;
   background-attachment: fixed !important;
 }
 
@@ -116,16 +136,17 @@ body::before {
   inset: -10vmax;        /* oversize so the drift animation never reveals edges */
   z-index: -2;
   pointer-events: none;
-  /* Four huge radial "blobs" in the brand palette. screen-blend them
-     onto the dark base for that volumetric aurora-in-deep-space look.
-     Positions are fractional so the transform below moves the whole
-     canvas — much cheaper than animating background-position. */
+  /* Four huge radial "blobs" — the firelight aurora. Amber, ember,
+     mahogany, and warm honey, screen-blended onto the deep walnut
+     base. The whole canvas reads as a hearth: warm light pooling
+     in the corners with shadow between. Positions fractional so
+     the transform below moves the canvas — cheap on the GPU. */
   background:
-    radial-gradient(ellipse 46% 40% at 18% 22%, rgba(212, 175, 122, 0.32), transparent 62%),
-    radial-gradient(ellipse 52% 44% at 82% 18%, rgba(138, 47, 60, 0.28),  transparent 65%),
-    radial-gradient(ellipse 60% 50% at 25% 82%, rgba(68, 34, 120, 0.32),  transparent 66%),
-    radial-gradient(ellipse 44% 38% at 78% 78%, rgba(191, 87, 86, 0.22),  transparent 64%);
-  filter: blur(40px) saturate(120%);
+    radial-gradient(ellipse 46% 40% at 18% 22%, rgba(232, 168, 56, 0.34), transparent 62%),
+    radial-gradient(ellipse 52% 44% at 82% 18%, rgba(196, 90, 58, 0.28),  transparent 65%),
+    radial-gradient(ellipse 60% 50% at 25% 82%, rgba(122, 42, 26, 0.32),  transparent 66%),
+    radial-gradient(ellipse 44% 38% at 78% 78%, rgba(255, 194, 102, 0.20), transparent 64%);
+  filter: blur(40px) saturate(125%);
   /* Two combined animations: slow organic drift + mouse parallax.
      The parallax offset (calc(var(--wf-mx) * 22px)) is layered on
      top of the keyframe translation via nested calc in translate3d. */
@@ -136,17 +157,20 @@ body::before {
 }
 
 @keyframes wf-aurora-drift {
+  /* Hue-rotate kept narrow (±6°) so the firelight stays firelight —
+     never crosses into anything cold. The breathing is in saturation
+     and blur, not color. */
   0% {
     transform: translate3d(calc(-18px + var(--wf-mx) * 22px), calc(-10px + var(--wf-my) * 18px), 0) scale(1);
-    filter: blur(40px) saturate(115%) hue-rotate(0deg);
+    filter: blur(40px) saturate(120%) hue-rotate(0deg);
   }
   50% {
     transform: translate3d(calc(22px + var(--wf-mx) * 22px), calc(14px + var(--wf-my) * 18px), 0) scale(1.08);
-    filter: blur(52px) saturate(135%) hue-rotate(-8deg);
+    filter: blur(54px) saturate(140%) hue-rotate(-4deg);
   }
   100% {
     transform: translate3d(calc(-14px + var(--wf-mx) * 22px), calc(18px + var(--wf-my) * 18px), 0) scale(1.04);
-    filter: blur(44px) saturate(125%) hue-rotate(6deg);
+    filter: blur(46px) saturate(130%) hue-rotate(3deg);
   }
 }
 
@@ -184,7 +208,10 @@ body::after {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background: radial-gradient(ellipse 75% 65% at 50% 40%, transparent 55%, rgba(5, 3, 10, 0.55) 92%, rgba(5, 3, 10, 0.78) 100%);
+  /* Warm-shadow vignette. The corners decay into deep espresso
+     instead of cold ink-black — keeps the room feeling lit by
+     a single warm source. */
+  background: radial-gradient(ellipse 75% 65% at 50% 40%, transparent 55%, rgba(8, 4, 1, 0.55) 92%, rgba(8, 4, 1, 0.80) 100%);
   animation: wf-vignette-breath 14s ease-in-out infinite alternate;
 }
 
@@ -203,7 +230,10 @@ body::after {
   inset: -20vmax;
   z-index: -1;
   pointer-events: none;
-  background: linear-gradient(115deg, transparent 42%, rgba(236, 201, 152, 0.06) 50%, transparent 58%);
+  /* Warm sheen — once-per-38s amber sweep. Slightly brighter than
+     the previous champagne value so it reads against the warmer
+     base. mix-blend-mode: screen still keeps it gentle. */
+  background: linear-gradient(115deg, transparent 42%, rgba(255, 200, 130, 0.07) 50%, transparent 58%);
   transform: translate3d(-40vw, -20vh, 0);
   animation: wf-sheen-sweep 38s linear infinite;
   mix-blend-mode: screen;
@@ -235,17 +265,27 @@ body { margin: 0; color: var(--text); font-family: var(--font); line-height: 1.5
    Firefox + Chromium/WebKit. The default Windows scrollbar is a wide
    grey slab that clashes with the dark cinematic aesthetic — replace
    it with a narrow, almost-invisible bar. */
-html { scrollbar-width: thin; scrollbar-color: rgba(212, 175, 122, 0.35) transparent; }
+html { scrollbar-width: thin; scrollbar-color: rgba(232, 168, 56, 0.38) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(212, 175, 122, 0.25);
+  background: rgba(232, 168, 56, 0.28);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(212, 175, 122, 0.55); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 194, 102, 0.58); background-clip: padding-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ─── Focus ring — warm amber instead of browser-default blue. ──
+   :focus-visible only triggers on keyboard navigation, so this
+   doesn't add a ring on mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 
 /* While the startup intro is showing we lock page scroll AND force the
    scrollbar to hide entirely — otherwise the default Windows bar pops
@@ -281,7 +321,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
      stay clear of the corner buttons (≈92px wide). */
   padding: 0 0 0 2.5rem;
   height: 64px;
-  background: rgba(14, 10, 28, 0.78);
+  background: rgba(24, 14, 6, 0.78);
   backdrop-filter: blur(14px) saturate(160%);
   -webkit-backdrop-filter: blur(14px) saturate(160%);
   border-bottom: 1px solid var(--border);
@@ -318,7 +358,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   width: 32px;
   height: 32px;
   /* Subtle gold-on-graphite plate with hairline gold border */
-  background: linear-gradient(145deg, #1a1e27 0%, #0f1218 100%);
+  background: linear-gradient(145deg, #22180e 0%, #180f06 100%);
   color: var(--accent);
   border: 1px solid rgba(201, 169, 110, 0.38);
   border-radius: 6px;
@@ -370,15 +410,15 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   font-family: var(--font-mono, 'JetBrains Mono'), monospace;
   font-size: 0.72rem;
   letter-spacing: 0.05em;
-  color: rgba(212, 175, 122, 0.7);
+  color: rgba(232, 168, 56, 0.7);
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(212, 175, 122, 0.15);
+  border: 1px solid rgba(232, 168, 56, 0.15);
   user-select: none;
   transition: color 0.2s ease, border-color 0.2s ease;
 }
 .topbar-version:hover {
   color: var(--accent);
-  border-color: rgba(212, 175, 122, 0.35);
+  border-color: rgba(232, 168, 56, 0.35);
 }
 .topbar-version-dot {
   width: 7px;
@@ -504,13 +544,13 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #c9a96e;
-  box-shadow: 0 0 0 2px #0b0d12, 0 0 10px rgba(201, 169, 110, 0.85);
+  background: #e8a838;
+  box-shadow: 0 0 0 2px #130b04, 0 0 10px rgba(201, 169, 110, 0.85);
   animation: wf-updater-pulse 1.8s ease-in-out infinite;
 }
 .wf-updater[data-state='downloaded'] .wf-updater-dot {
   background: #4ade80;
-  box-shadow: 0 0 0 2px #0b0d12, 0 0 12px rgba(74, 222, 128, 0.9);
+  box-shadow: 0 0 0 2px #130b04, 0 0 12px rgba(74, 222, 128, 0.9);
 }
 .wf-updater[data-state='downloaded'] .wf-updater-btn {
   background: rgba(74, 222, 128, 0.12);
@@ -518,8 +558,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   color: #d4f7df;
 }
 .wf-updater[data-state='error'] .wf-updater-dot {
-  background: #bf5756;
-  box-shadow: 0 0 0 2px #0b0d12, 0 0 10px rgba(191, 87, 86, 0.75);
+  background: #d96b3e;
+  box-shadow: 0 0 0 2px #130b04, 0 0 10px rgba(217, 107, 62, 0.75);
 }
 @keyframes wf-updater-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
@@ -558,7 +598,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .wf-updater-panel-sub {
   margin-top: 4px;
   font-size: 0.8rem;
-  color: #8fa3b8;
+  color: #b8a685;
   line-height: 1.45;
 }
 
@@ -573,7 +613,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-updater-progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #c9a96e, #f3e6cc);
+  background: linear-gradient(90deg, #e8a838, #f3e6cc);
   border-radius: 999px;
   transition: width 0.4s ease;
   box-shadow: 0 0 12px rgba(201, 169, 110, 0.55);
@@ -583,7 +623,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   justify-content: space-between;
   margin-top: 6px;
   font-size: 0.72rem;
-  color: #8fa3b8;
+  color: #b8a685;
   font-variant-numeric: tabular-nums;
 }
 
@@ -591,8 +631,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .wf-updater-error {
   margin: 0 0 12px;
   padding: 8px 10px;
-  background: rgba(191, 87, 86, 0.12);
-  border: 1px solid rgba(191, 87, 86, 0.28);
+  background: rgba(217, 107, 62, 0.12);
+  border: 1px solid rgba(217, 107, 62, 0.28);
   color: #f3c8c7;
   border-radius: 8px;
   font-size: 0.75rem;
@@ -635,7 +675,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   cursor: not-allowed;
 }
 .wf-updater-action.primary {
-  background: linear-gradient(180deg, #c9a96e, #9f855a);
+  background: linear-gradient(180deg, #e8a838, #9f855a);
   border-color: rgba(243, 230, 204, 0.35);
   color: #1a140a;
   box-shadow: 0 6px 18px rgba(201, 169, 110, 0.32);
@@ -653,11 +693,11 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   display: flex;
   justify-content: space-between;
   font-size: 0.72rem;
-  color: #6f7c8d;
+  color: #9c8a68;
   font-variant-numeric: tabular-nums;
 }
 .wf-updater-foot-new {
-  color: #c9a96e;
+  color: #e8a838;
   font-weight: 600;
 }
 
@@ -693,7 +733,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  color: #e6e9ef;
+  color: #f0e3c5;
   font-size: 0.78rem;
   line-height: 1.35;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
@@ -715,19 +755,19 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .wf-debug-title {
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #c9a96e;
+  color: #e8a838;
   text-transform: uppercase;
   font-size: 0.72rem;
 }
 .wf-debug-sub {
   font-size: 0.68rem;
-  color: #6f7c8d;
+  color: #9c8a68;
   flex: 1;
 }
 .wf-debug-close {
   background: transparent;
   border: none;
-  color: #9aa3b2;
+  color: #c2af85;
   font-size: 1.15rem;
   cursor: pointer;
   padding: 0 4px;
@@ -742,7 +782,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   margin: 0;
 }
 .wf-debug-grid dt {
-  color: #7f8a99;
+  color: #a8957a;
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -750,7 +790,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-debug-grid dd {
   margin: 0;
-  color: #e6e9ef;
+  color: #f0e3c5;
   word-break: break-word;
 }
 .wf-debug-mono {
@@ -759,7 +799,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-debug-wrap {
   overflow-wrap: anywhere;
-  color: #b9c2ce;
+  color: #d8c8a2;
 }
 .wf-debug-badge {
   display: inline-block;
@@ -771,11 +811,11 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   letter-spacing: 0.04em;
   text-transform: uppercase;
   background: rgba(255, 255, 255, 0.08);
-  color: #c9a96e;
+  color: #e8a838;
 }
 .wf-debug-grid dd[data-codec="ok"] .wf-debug-badge {
   background: rgba(72, 187, 120, 0.16);
-  color: #6fdc9a;
+  color: #9bc575;
 }
 .wf-debug-grid dd[data-codec="transcode"] .wf-debug-badge {
   background: rgba(237, 137, 54, 0.16);
@@ -783,12 +823,12 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-debug-grid dd[data-codec="unknown"] .wf-debug-badge {
   background: rgba(200, 80, 80, 0.16);
-  color: #ef7a7a;
+  color: #e08a4c;
 }
-.wf-debug-grid dd[data-endpoint="stream"] { color: #6fdc9a; }
+.wf-debug-grid dd[data-endpoint="stream"] { color: #9bc575; }
 .wf-debug-grid dd[data-endpoint="remux"] { color: #f5a562; }
 .wf-debug-grid dd[data-endpoint="unknown"],
-.wf-debug-grid dd[data-endpoint="external"] { color: #9aa3b2; }
+.wf-debug-grid dd[data-endpoint="external"] { color: #c2af85; }
 .wf-debug-foot {
   margin-top: 10px;
   padding-top: 8px;
@@ -828,8 +868,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   background: rgba(10, 8, 18, 0.62);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
-  border: 1px solid rgba(191, 87, 86, 0.30);
-  color: rgba(244, 238, 223, 0.82);
+  border: 1px solid rgba(217, 107, 62, 0.30);
+  color: rgba(248, 238, 211, 0.82);
   border-radius: 10px;
   cursor: pointer;
   opacity: 0;
@@ -843,8 +883,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   pointer-events: auto;
 }
 .player-exit:hover {
-  background: rgba(191, 87, 86, 0.90);
-  border-color: rgba(191, 87, 86, 1);
+  background: rgba(217, 107, 62, 0.90);
+  border-color: rgba(217, 107, 62, 1);
   color: #fff5e8;
   transform: translateY(-1px);
 }
@@ -877,7 +917,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .playback-error-card h3 {
   margin: 0 0 8px;
   font-size: 1.15rem;
-  color: #c9a96e;
+  color: #e8a838;
   font-weight: 600;
   letter-spacing: 0.3px;
 }
@@ -1002,7 +1042,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   display: flex;
   flex-direction: column;
   padding: 1rem 0.75rem 1rem 1rem;
-  background: linear-gradient(180deg, rgba(8,5,18,0.92) 0%, rgba(14,10,28,0.85) 100%);
+  background: linear-gradient(180deg, rgba(8,5,18,0.92) 0%, rgba(24, 14, 6,0.85) 100%);
   border-right: 1px solid var(--border-strong);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -1309,9 +1349,14 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .hero-gradient {
   position: absolute;
   inset: 0;
+  /* Warm cross-fade — hero artwork dissolves into walnut at the
+     bottom and along the left edge where the title text sits. The
+     left ramp is steeper than the bottom one so the title gets the
+     darker backdrop it needs for contrast, while the rest of the
+     poster art stays visible on the right. */
   background:
-    linear-gradient(to top, var(--bg) 0%, rgba(10,10,15,0.6) 40%, transparent 70%),
-    linear-gradient(to right, rgba(10,10,15,0.9) 0%, transparent 50%);
+    linear-gradient(to top, var(--bg) 0%, rgba(18, 10, 4, 0.62) 40%, transparent 72%),
+    linear-gradient(to right, rgba(18, 10, 4, 0.92) 0%, rgba(18, 10, 4, 0.55) 30%, transparent 55%);
 }
 
 .hero-content {
@@ -1435,7 +1480,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 .btn-accent {
   background: var(--accent);
-  color: #0b0d12;
+  color: #130b04;
   font-weight: 600;
   letter-spacing: 0.02em;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset;
@@ -1581,7 +1626,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   color: #fff;
 }
 .row-poster-trailer-audio:focus-visible {
-  outline: 2px solid var(--accent, #c9a96e);
+  outline: 2px solid var(--accent, #e8a838);
   outline-offset: 2px;
 }
 .row-poster-trailer-audio svg { display: block; }
@@ -1614,9 +1659,9 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   color: #0b0712;
   /* Heavy gold-tinged outline + soft black shadow for depth. The
      stroke is what makes the numeral readable against any backdrop. */
-  -webkit-text-stroke: 4px rgba(212, 175, 122, 0.55);
+  -webkit-text-stroke: 4px rgba(232, 168, 56, 0.55);
   text-shadow:
-    0 0 24px rgba(212, 175, 122, 0.18),
+    0 0 24px rgba(232, 168, 56, 0.18),
     4px 4px 14px rgba(0, 0, 0, 0.85);
   font-family: var(--font-display, 'Inter'), -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   font-style: italic;          /* slight slant feels editorial */
@@ -1663,7 +1708,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .row-poster-progress-bar {
   height: 100%;
-  background: var(--accent, #c9a96e);
+  background: var(--accent, #e8a838);
   transition: width 0.3s ease;
 }
 
@@ -1715,7 +1760,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  background: linear-gradient(135deg, #1a1208, #16213e);
   color: var(--text-dim);
   font-size: 2.5rem;
   font-weight: 800;
@@ -1743,13 +1788,13 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 .row-arrow--left {
   left: -8px;
-  background: linear-gradient(to right, rgba(10,10,15,0.95), transparent);
+  background: linear-gradient(to right, rgba(18, 10, 4,0.95), transparent);
   padding-right: 8px;
 }
 
 .row-arrow--right {
   right: -8px;
-  background: linear-gradient(to left, rgba(10,10,15,0.95), transparent);
+  background: linear-gradient(to left, rgba(18, 10, 4,0.95), transparent);
   padding-left: 8px;
 }
 
@@ -1990,39 +2035,79 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 
 .season-select option {
-  background: #1a1a2e;
+  background: #1a1208;
   color: white;
 }
 
 .episodes-list {
-  max-height: 480px;
+  /* Bumped from 480px (~5 rows) → 540px (~5.5 rows) to give long
+     seasons more breathing room before scroll engages. Combined with
+     the row min-height fix below, 20-episode shows no longer feel
+     cramped. */
+  max-height: 540px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.55rem;
   margin-bottom: 1rem;
+  /* Padding-right reserves space for the scrollbar so rows don't
+     visually shift sideways when the scrollbar appears for long
+     seasons. */
+  padding-right: 4px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 /* Episode still + name row — Netflix-style picker. Image left,
    metadata right. Falls back to a gradient placeholder when the
-   episode still hasn't been published yet. */
+   episode still hasn't been published yet. v1.7.3 fix: explicit
+   min-height + display:block on the still + flex-shrink:0 on every
+   axis so 20+ episode seasons can't collapse rows on top of each
+   other (which is what manifested as "thumbnails stacked, titles
+   invisible" — flex was deciding the per-row height from the
+   shortest item when many rows competed for space). */
 .episodes-list .source-btn {
-  align-items: flex-start;
+  align-items: stretch;        /* still + meta both fill row height */
   padding: 0;
   overflow: hidden;
   gap: 0;
+  min-height: 92px;            /* never collapse below the still height */
+  flex-shrink: 0;              /* don't let parent flex squeeze us */
 }
 .source-ep-still {
+  display: block;              /* avoid inline-image baseline gap */
   width: 158px;
-  height: 88px;
+  height: 92px;
   flex-shrink: 0;
   object-fit: cover;
-  background: rgba(255,255,255,0.04);
+  /* Warm wood-grain placeholder when the image is missing or still
+     loading. Lets the user feel the row is "there" instead of seeing
+     a flat grey box. */
+  background:
+    linear-gradient(135deg, rgba(232, 168, 56, 0.08), rgba(122, 42, 26, 0.04)),
+    var(--bg-surface, #1a1108);
 }
 .source-ep-still--placeholder {
-  background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  /* Distinct gradient + a subtle play icon so the user knows it's
+     intentional, not a broken image. Diagonal stripe of amber over
+     deep walnut. */
+  background:
+    radial-gradient(ellipse at 30% 30%, rgba(232, 168, 56, 0.12), transparent 60%),
+    linear-gradient(135deg, rgba(232, 168, 56, 0.06) 0%, rgba(46, 32, 22, 0.18) 50%, rgba(20, 12, 6, 0.04) 100%);
+  position: relative;
+}
+.source-ep-still--placeholder::after {
+  /* Faint amber play triangle so empty thumbnails feel "intentional"
+     rather than "broken". */
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 0; height: 0;
+  transform: translate(-44%, -50%);
+  border-left: 18px solid rgba(232, 168, 56, 0.32);
+  border-top: 11px solid transparent;
+  border-bottom: 11px solid transparent;
+  pointer-events: none;
 }
 .source-ep-meta {
   flex: 1;
@@ -2038,7 +2123,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   min-width: 0;
   color: var(--text);
   font-weight: 500;
-  font-size: 0.92rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.005em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2093,7 +2179,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   height: 20px;
   border-radius: 50%;
   background: rgba(126, 192, 143, 0.18);
-  color: var(--green, #7ec08f);
+  color: var(--green, #88b06a);
   margin-left: -4px;
   flex-shrink: 0;
 }
@@ -2135,10 +2221,10 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   box-shadow: 0 0 6px currentColor;
   flex-shrink: 0;
 }
-.source-seeds--dead    { color: #bf5756; opacity: 0.82; }
+.source-seeds--dead    { color: #d96b3e; opacity: 0.82; }
 .source-seeds--risky   { color: #e0a35c; }
-.source-seeds--ok      { color: #7ec08f; }
-.source-seeds--healthy { color: #7ec08f; filter: saturate(1.2) brightness(1.05); }
+.source-seeds--ok      { color: #88b06a; }
+.source-seeds--healthy { color: #88b06a; filter: saturate(1.2) brightness(1.05); }
 .source-seeds--dead .source-seeds-dot    { animation: wf-seeds-dead 2.2s ease-in-out infinite; }
 @keyframes wf-seeds-dead {
   0%, 100% { opacity: 0.5; }
@@ -2331,7 +2417,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .cc-back:hover {
   opacity: 1;
-  background: rgba(212, 175, 122, 0.22);
+  background: rgba(232, 168, 56, 0.22);
   transform: translateX(-2px);
 }
 .cc-back::after {
@@ -2456,7 +2542,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   transform: translate(-50%, -50%) scale(0);
   transition: transform 0.15s;
   pointer-events: none;
-  box-shadow: 0 0 0 2px rgba(14, 10, 28, 0.6), 0 0 14px var(--accent-glow-strong);
+  box-shadow: 0 0 0 2px rgba(24, 14, 6, 0.6), 0 0 14px var(--accent-glow-strong);
 }
 .cc-seek:hover .cc-seek-thumb { transform: translate(-50%, -50%) scale(1); }
 
@@ -2490,7 +2576,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-debug-spark-label {
   font-size: 11px;
-  color: var(--muted, #8fa3b8);
+  color: var(--muted, #b8a685);
 }
 
 /* Centred update-available modal. Replaces the old corner indicator
@@ -2513,7 +2599,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   to { opacity: 1; }
 }
 .wf-update-modal {
-  background: linear-gradient(180deg, #1a1426 0%, #0e0a1c 100%);
+  background: linear-gradient(180deg, #1a1426 0%, #180e06 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   padding: 36px 42px 32px;
@@ -2534,7 +2620,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   align-items: center;
   justify-content: center;
   background: rgba(201, 169, 110, 0.12);
-  color: var(--accent, #c9a96e);
+  color: var(--accent, #e8a838);
   margin-bottom: 18px;
 }
 .wf-update-title {
@@ -2545,12 +2631,12 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-update-version {
   font-size: 14px;
-  color: var(--accent, #c9a96e);
+  color: var(--accent, #e8a838);
   margin: 0 0 14px;
 }
 .wf-update-blurb {
   font-size: 13px;
-  color: var(--muted, #8fa3b8);
+  color: var(--muted, #b8a685);
   line-height: 1.55;
   margin: 0 0 26px;
 }
@@ -2574,9 +2660,9 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   background: rgba(255, 255, 255, 0.05);
 }
 .wf-update-btn--primary {
-  background: var(--accent, #c9a96e);
-  color: #0e0a1c;
-  border-color: var(--accent, #c9a96e);
+  background: var(--accent, #e8a838);
+  color: #180e06;
+  border-color: var(--accent, #e8a838);
   font-weight: 600;
 }
 .wf-update-btn--primary:hover {
@@ -2686,7 +2772,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
   transition: background 0.15s, transform 0.1s;
 }
-.cc-skip-overlay:hover { background: rgba(201, 169, 110, 0.85); color: #0e0a1c; }
+.cc-skip-overlay:hover { background: rgba(201, 169, 110, 0.85); color: #180e06; }
 .cc-skip-overlay:active { transform: translateY(1px); }
 
 /* Timing-panel row — used for sub delay, intro marks, sub style.
@@ -3072,10 +3158,10 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   inset: 0;
   z-index: 50;
   background:
-    radial-gradient(ellipse 80% 55% at 22% 8%, rgba(212, 175, 122, 0.12), transparent 62%),
-    radial-gradient(ellipse 65% 45% at 82% 95%, rgba(138, 47, 60, 0.16), transparent 62%),
-    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(40, 20, 50, 0.40), transparent 72%),
-    radial-gradient(ellipse at center, #0a0812 0%, #050309 78%);
+    radial-gradient(ellipse 80% 55% at 22% 8%, rgba(232, 168, 56, 0.12), transparent 62%),
+    radial-gradient(ellipse 65% 45% at 82% 95%, rgba(122, 42, 26, 0.16), transparent 62%),
+    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(36, 24, 16, 0.40), transparent 72%),
+    radial-gradient(ellipse at center, #120a04 0%, #0a0502 78%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3093,9 +3179,9 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   inset: 0;
   z-index: 9999;
   background:
-    radial-gradient(ellipse 80% 55% at 22% 8%, rgba(212, 175, 122, 0.09), transparent 62%),
-    radial-gradient(ellipse 65% 45% at 82% 95%, rgba(138, 47, 60, 0.12), transparent 62%),
-    #050309;
+    radial-gradient(ellipse 80% 55% at 22% 8%, rgba(232, 168, 56, 0.09), transparent 62%),
+    radial-gradient(ellipse 65% 45% at 82% 95%, rgba(122, 42, 26, 0.12), transparent 62%),
+    #0a0502;
   overflow: hidden;
 }
 .wf-startup-intro-layer .wf-intro {
@@ -3114,8 +3200,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at center, rgba(212, 175, 122, 0.14) 0%, rgba(0,0,0,0) 45%),
-    radial-gradient(ellipse at center, transparent 35%, rgba(12, 6, 20, 0.92) 100%);
+    radial-gradient(ellipse at center, rgba(232, 168, 56, 0.14) 0%, rgba(0,0,0,0) 45%),
+    radial-gradient(ellipse at center, transparent 35%, rgba(16, 8, 4, 0.92) 100%);
   pointer-events: none;
 }
 
@@ -3143,16 +3229,16 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   height: 120px;
   margin: -60px 0 0 -60px;
   border-radius: 50%;
-  border: 1.5px solid rgba(212, 175, 122, 0.55);
+  border: 1.5px solid rgba(232, 168, 56, 0.55);
   box-shadow:
-    0 0 40px rgba(212, 175, 122, 0.25) inset,
-    0 0 40px rgba(212, 175, 122, 0.25);
+    0 0 40px rgba(232, 168, 56, 0.25) inset,
+    0 0 40px rgba(232, 168, 56, 0.25);
   opacity: 0;
   animation: wf-ring-out 2.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 .wf-intro-ring-pulse--1 { animation-delay: 0.25s; }
-.wf-intro-ring-pulse--2 { animation-delay: 0.55s; border-color: rgba(191, 87, 86, 0.45); }
-.wf-intro-ring-pulse--3 { animation-delay: 0.85s; border-color: rgba(251, 234, 208, 0.45); }
+.wf-intro-ring-pulse--2 { animation-delay: 0.55s; border-color: rgba(217, 107, 62, 0.45); }
+.wf-intro-ring-pulse--3 { animation-delay: 0.85s; border-color: rgba(255, 220, 170, 0.45); }
 @keyframes wf-ring-out {
   0%   { opacity: 0; transform: scale(0.35); border-width: 2.5px; }
   20%  { opacity: 0.95; }
@@ -3171,11 +3257,11 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
      core → oxblood mid → violet-ink outer. */
   background:
     radial-gradient(circle at center,
-      rgba(255, 236, 204, 0.58) 0%,
-      rgba(212, 175, 122, 0.38) 22%,
-      rgba(191, 87, 86, 0.22) 44%,
-      rgba(138, 47, 60, 0.12) 60%,
-      rgba(40, 20, 50, 0.06) 72%,
+      rgba(255, 220, 156, 0.58) 0%,
+      rgba(232, 168, 56, 0.38) 22%,
+      rgba(217, 107, 62, 0.22) 44%,
+      rgba(122, 42, 26, 0.12) 60%,
+      rgba(36, 24, 16, 0.06) 72%,
       transparent 80%);
   filter: blur(14px);
   opacity: 0;
@@ -3209,8 +3295,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   height: 3px;
   margin: -1.5px 0 0 -1.5px;
   border-radius: 50%;
-  background: radial-gradient(circle, #fbead0 0%, #d4af7a 55%, rgba(212,175,122,0) 100%);
-  box-shadow: 0 0 6px rgba(255, 236, 204, 0.9);
+  background: radial-gradient(circle, #fbead0 0%, #e8a838 55%, rgba(232, 168, 56,0) 100%);
+  box-shadow: 0 0 6px rgba(255, 220, 156, 0.9);
   opacity: 0;
   transform: rotate(var(--angle)) translateX(0);
   animation: wf-spark-out 1.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -3252,8 +3338,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
     drop-shadow(0 0 1px rgba(0, 0, 0, 0.95))
     drop-shadow(0 2px 2px rgba(0, 0, 0, 0.9))
     drop-shadow(0 0 18px rgba(255, 255, 255, 0.45))
-    drop-shadow(0 0 44px rgba(212, 175, 122, 0.50))
-    drop-shadow(0 12px 48px rgba(138, 47, 60, 0.28));
+    drop-shadow(0 0 44px rgba(232, 168, 56, 0.50))
+    drop-shadow(0 12px 48px rgba(122, 42, 26, 0.28));
   display: block;
   line-height: 1;
 }
@@ -3263,7 +3349,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   position: absolute;
   top: 50%; left: 50%;
   width: 120px; height: 120px;
-  border: 2px solid rgba(212, 175, 122, 0.7);
+  border: 2px solid rgba(232, 168, 56, 0.7);
   border-radius: 50%;
   transform: translate(-50%, -50%) scale(0.2);
   opacity: 0;
@@ -3304,7 +3390,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
      this via :nth-child(-n+5) below to get the ivory "Wardo" treatment
      — same split as the topbar logo where "Wardo" is --text and
      "Flix" is --accent. */
-  background: linear-gradient(180deg, #fbead0 0%, #ecc998 30%, #d4af7a 60%, #8a6a42 100%);
+  background: linear-gradient(180deg, #fbead0 0%, #ffc266 30%, #e8a838 60%, #a06814 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -3316,8 +3402,8 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
     drop-shadow(0 0 1px rgba(0, 0, 0, 0.9))
     drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.55))
     drop-shadow(-1px 1px 0 rgba(0, 0, 0, 0.55))
-    drop-shadow(0 0 10px rgba(212, 175, 122, 0.55))
-    drop-shadow(0 0 24px rgba(138, 47, 60, 0.22))
+    drop-shadow(0 0 10px rgba(232, 168, 56, 0.55))
+    drop-shadow(0 0 24px rgba(122, 42, 26, 0.22))
     drop-shadow(0 3px 6px rgba(0, 0, 0, 0.85));
   opacity: 0;
   transform: translateY(20px);
@@ -3335,7 +3421,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
     drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6))
     drop-shadow(-1px 1px 0 rgba(0, 0, 0, 0.6))
     drop-shadow(0 0 10px rgba(255, 255, 255, 0.40))
-    drop-shadow(0 0 24px rgba(212, 175, 122, 0.28))
+    drop-shadow(0 0 24px rgba(232, 168, 56, 0.28))
     drop-shadow(0 3px 6px rgba(0, 0, 0, 0.85));
 }
 /* Entry animation: only touches opacity + transform. We deliberately do
@@ -3358,7 +3444,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: 0.5em;
-  color: rgba(212, 175, 122, 0.55);
+  color: rgba(232, 168, 56, 0.55);
   margin-top: 0.75rem;
   text-transform: uppercase;
   opacity: 0;
@@ -3381,14 +3467,14 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   /* Ivory text on a faint rose-gold undercoat — matches --text-muted
      but a touch warmer, so the serif reads as hand-set type rather
      than marketing copy. */
-  color: rgba(244, 238, 223, 0.82);
+  color: rgba(248, 238, 211, 0.82);
   max-width: min(72ch, 82vw);
   text-align: center;
   line-height: 1.45;
   margin-top: 1.1rem;
   text-shadow:
     0 2px 14px rgba(0, 0, 0, 0.7),
-    0 0 22px rgba(212, 175, 122, 0.12);
+    0 0 22px rgba(232, 168, 56, 0.12);
   animation-name: wf-quote-in;
 }
 @keyframes wf-quote-in {
@@ -3402,7 +3488,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   inset: 0;
   z-index: 4;
   pointer-events: none;
-  background: radial-gradient(ellipse at center, rgba(255, 240, 210, 0.6) 0%, transparent 60%);
+  background: radial-gradient(ellipse at center, rgba(255, 230, 175, 0.6) 0%, transparent 60%);
   opacity: 0;
   /* Re-timed in v1.7.1 to land exactly with the audio impact (1.1s)
      so the flash, the lens-flare sweep, and the shake all hit on the
@@ -3467,7 +3553,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   background: linear-gradient(74deg,
     transparent 0%,
     transparent 42%,
-    rgba(212, 175, 122, 0.18) 50%,
+    rgba(232, 168, 56, 0.18) 50%,
     transparent 58%,
     transparent 100%);
   animation: wf-godray-pulse 2.6s ease-in-out infinite alternate-reverse;
@@ -3477,7 +3563,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   background: linear-gradient(118deg,
     transparent 0%,
     transparent 44%,
-    rgba(191, 87, 86, 0.16) 50%,
+    rgba(217, 107, 62, 0.16) 50%,
     transparent 56%,
     transparent 100%);
   animation: wf-godray-pulse 3s ease-in-out infinite alternate;
@@ -3695,12 +3781,12 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   border-radius: 999px;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease;
-  box-shadow: 0 2px 10px rgba(212, 175, 122, 0.25);
+  box-shadow: 0 2px 10px rgba(232, 168, 56, 0.25);
   letter-spacing: 0.02em;
 }
 .modal-trailer-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 18px rgba(212, 175, 122, 0.42);
+  box-shadow: 0 4px 18px rgba(232, 168, 56, 0.42);
 }
 
 /* Tagline italic line above overview */
@@ -3772,7 +3858,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   z-index: 1;
 }
 .trailer-close:hover {
-  background: rgba(191, 87, 86, 0.3);
+  background: rgba(217, 107, 62, 0.3);
   transform: scale(1.08);
 }
 
@@ -4023,7 +4109,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   z-index: 200;
   background:
     radial-gradient(1200px 700px at 50% -10%, rgba(201, 169, 110, 0.08), transparent 60%),
-    radial-gradient(900px 600px at 50% 110%, rgba(138, 47, 60, 0.12), transparent 65%),
+    radial-gradient(900px 600px at 50% 110%, rgba(122, 42, 26, 0.12), transparent 65%),
     linear-gradient(180deg, #0b0d11 0%, #111317 50%, #0b0d11 100%);
   display: flex;
   align-items: center;
@@ -4225,9 +4311,9 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   margin-left: auto;
 }
 .btn-danger {
-  background: rgba(138, 47, 60, 0.2);
+  background: rgba(122, 42, 26, 0.2);
   color: #e89199;
-  border: 1px solid rgba(138, 47, 60, 0.5);
+  border: 1px solid rgba(122, 42, 26, 0.5);
   padding: 0.55rem 1.1rem;
   border-radius: 6px;
   font-size: 0.9rem;
@@ -4236,7 +4322,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   transition: all 0.15s var(--ease);
 }
 .btn-danger:hover {
-  background: rgba(138, 47, 60, 0.35);
+  background: rgba(122, 42, 26, 0.35);
   border-color: #a74451;
   color: #f4b4bb;
 }
@@ -4391,7 +4477,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   transform: translateY(-1px);
 }
 .wf-mood-pill.active {
-  background: linear-gradient(180deg, rgba(201, 169, 110, 0.25), rgba(138, 47, 60, 0.22));
+  background: linear-gradient(180deg, rgba(201, 169, 110, 0.25), rgba(122, 42, 26, 0.22));
   border-color: var(--accent);
   color: var(--text);
   box-shadow:
@@ -4443,7 +4529,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 8px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
-  color: #e6e9ef;
+  color: #f0e3c5;
   animation: wf-toast-in 180ms ease-out;
 }
 @keyframes wf-toast-in {
@@ -4451,9 +4537,9 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   to { opacity: 1; transform: translateX(0); }
 }
 .wf-toast[data-variant="info"] { border-left-color: #6aa8ff; }
-.wf-toast[data-variant="success"] { border-left-color: #6fdc9a; }
+.wf-toast[data-variant="success"] { border-left-color: #9bc575; }
 .wf-toast[data-variant="warning"] { border-left-color: #f5a562; }
-.wf-toast[data-variant="error"] { border-left-color: #ef7a7a; }
+.wf-toast[data-variant="error"] { border-left-color: #e08a4c; }
 .wf-toast-body { flex: 1; line-height: 1.4; font-size: 0.88rem; }
 .wf-toast-title {
   font-weight: 600;
@@ -4463,12 +4549,12 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 .wf-toast-msg { color: #c7cdd6; }
 .wf-toast[data-variant="warning"] .wf-toast-title { color: #f5a562; }
-.wf-toast[data-variant="error"] .wf-toast-title { color: #ef7a7a; }
-.wf-toast[data-variant="success"] .wf-toast-title { color: #6fdc9a; }
+.wf-toast[data-variant="error"] .wf-toast-title { color: #e08a4c; }
+.wf-toast[data-variant="success"] .wf-toast-title { color: #9bc575; }
 .wf-toast-close {
   background: transparent;
   border: none;
-  color: #6f7c8d;
+  color: #9c8a68;
   font-size: 1.1rem;
   cursor: pointer;
   line-height: 1;
@@ -4506,7 +4592,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  color: #e6e9ef;
+  color: #f0e3c5;
   animation: wf-shortcut-in 200ms ease-out;
 }
 @keyframes wf-shortcut-in {
@@ -4523,13 +4609,13 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .wf-shortcuts-head h2 {
   margin: 0;
   font-size: 1.1rem;
-  color: #c9a96e;
+  color: #e8a838;
   letter-spacing: 0.02em;
 }
 .wf-shortcuts-close {
   background: transparent;
   border: none;
-  color: #9aa3b2;
+  color: #c2af85;
   font-size: 1.4rem;
   line-height: 1;
   cursor: pointer;
@@ -4542,7 +4628,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   font-size: 0.74rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #7f8a99;
+  color: #a8957a;
   margin: 0 0 8px;
 }
 .wf-shortcuts-body dl { margin: 0; }
@@ -4555,7 +4641,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   font-size: 0.88rem;
 }
 .wf-shortcut-row dt { margin: 0; }
-.wf-shortcut-row dd { margin: 0; color: #b9c2ce; }
+.wf-shortcut-row dd { margin: 0; color: #d8c8a2; }
 .wf-shortcut-row kbd {
   display: inline-block;
   padding: 2px 8px;

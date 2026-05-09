@@ -1895,9 +1895,17 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                         )}
                         <div className="source-ep-meta">
                           <span className="source-ep">E{String(epNum).padStart(2, '0')}</span>
-                          {episodeStills[epNum]?.name && (
-                            <span className="source-ep-name">{episodeStills[epNum].name}</span>
-                          )}
+                          {/* Always render a name. TMDB sometimes returns
+                              an episode without a `name` (placeholder),
+                              and synthesised slots from the v1.7.2
+                              episode-list-fill have no entry in
+                              episodeStills at all. Fall through to a
+                              generic "Episode N" so the row never
+                              renders just a still + number with no
+                              human-readable label. */}
+                          <span className="source-ep-name">
+                            {episodeStills[epNum]?.name || `Episode ${epNum}`}
+                          </span>
                           {watched && (
                             <span className="source-watched" title="Watched" aria-label="Watched">
                               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

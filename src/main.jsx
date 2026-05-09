@@ -53,36 +53,36 @@ class AppErrorBoundary extends Component {
     return (
       <div style={{
         minHeight: '100vh',
-        background: '#0b0d12',
-        color: '#ecefe4',
+        background: '#120a04',
+        color: '#f8eed3',
         fontFamily: 'system-ui, Segoe UI, sans-serif',
         padding: '48px 32px',
         boxSizing: 'border-box',
       }}>
         <div style={{ maxWidth: 720, margin: '0 auto' }}>
-          <h1 style={{ color: '#c9a96e', fontWeight: 600, marginBottom: 8 }}>
+          <h1 style={{ color: '#e8a838', fontWeight: 600, marginBottom: 8 }}>
             WardoFlix hit an unexpected error
           </h1>
-          <p style={{ color: '#b8bcc4', lineHeight: 1.55, marginBottom: 24 }}>
+          <p style={{ color: '#cbb695', lineHeight: 1.55, marginBottom: 24 }}>
             Something threw while rendering. The app is still running, but this
             view is frozen until you reload. Your cache, history, and profiles
             are unaffected.
           </p>
           <div style={{
-            background: '#151821',
+            background: '#1a1108',
             border: '1px solid rgba(255,255,255,0.06)',
             borderRadius: 8,
             padding: '14px 16px',
             marginBottom: 20,
             fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
             fontSize: 12,
-            color: '#8fa3b8',
+            color: '#b8a685',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             maxHeight: 360,
             overflow: 'auto',
           }}>
-            <strong style={{ color: '#f5a562' }}>{error?.message || String(error)}</strong>
+            <strong style={{ color: '#ffc266' }}>{error?.message || String(error)}</strong>
             {error?.stack ? '\n\n' + error.stack : ''}
             {info?.componentStack ? '\n\nComponent:' + info.componentStack : ''}
           </div>
@@ -99,9 +99,9 @@ class AppErrorBoundary extends Component {
 
 function btnStyle(primary) {
   return {
-    background: primary ? '#c9a96e' : 'transparent',
-    color: primary ? '#0b0d12' : '#ecefe4',
-    border: '1px solid ' + (primary ? '#c9a96e' : 'rgba(255,255,255,0.12)'),
+    background: primary ? '#e8a838' : 'transparent',
+    color: primary ? '#120a04' : '#f8eed3',
+    border: '1px solid ' + (primary ? '#e8a838' : 'rgba(255,255,255,0.12)'),
     borderRadius: 6,
     padding: '8px 16px',
     fontSize: 13,
