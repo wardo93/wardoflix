@@ -326,43 +326,71 @@ export function WardoFlixIntro({ onComplete, quote, fullscreenTarget }) {
       {/* Soft radial vignette + deep-space gradient backdrop */}
       <div className="wf-intro-vignette" aria-hidden="true" />
 
-      <div className="wf-intro-content">
-        {/* Expanding concentric rings — clean, not stripey */}
-        <div className="wf-intro-rings" aria-hidden="true">
-          <div className="wf-intro-ring-pulse wf-intro-ring-pulse--1" />
-          <div className="wf-intro-ring-pulse wf-intro-ring-pulse--2" />
-          <div className="wf-intro-ring-pulse wf-intro-ring-pulse--3" />
-        </div>
-
-        {/* Glowing orb that swells at the "tudum" beat */}
-        <div className="wf-intro-orb" aria-hidden="true" />
-
-        {/* Particle sparks drifting outward from the center */}
-        <div className="wf-intro-sparks" aria-hidden="true">
-          {[...Array(16)].map((_, i) => (
-            <div
-              key={i}
-              className="wf-intro-spark"
-              style={{
-                '--angle': `${(360 / 16) * i}deg`,
-                '--delay': `${0.2 + (i % 4) * 0.08}s`,
-                '--distance': `${38 + (i % 5) * 6}vmin`,
-              }}
-            />
-          ))}
-        </div>
-
-        <div className="wf-intro-logo">
-          <span className="wf-intro-w">W</span>
-          <div className="wf-intro-ring" aria-hidden="true" />
-        </div>
-        <div className="wf-intro-text">
-          {'WARDOFLIX'.split('').map((ch, i) => (
-            <span key={i} className="wf-intro-char" style={{ animationDelay: `${1.05 + i * 0.05}s` }}>{ch}</span>
-          ))}
-        </div>
-        <div className="wf-intro-tagline wf-intro-tagline--quote">{quoteRef.current}</div>
+      {/* God rays — diagonal light beams that swell with the brass chord.
+          Three layered angles so the rays read as a fan, not a single
+          slash. Sit BEHIND .wf-intro-content via z-index. v1.7.1+. */}
+      <div className="wf-intro-godrays" aria-hidden="true">
+        <div className="wf-intro-godray wf-intro-godray--1" />
+        <div className="wf-intro-godray wf-intro-godray--2" />
+        <div className="wf-intro-godray wf-intro-godray--3" />
       </div>
+
+      {/* Film grain — SVG turbulence rendered into a tile, then layered
+          over the whole intro with a subtle multiply blend. Adds the
+          celluloid texture that pure gradient backgrounds can't fake.
+          The SVG is dataURL-encoded so it ships in the CSS bundle and
+          doesn't need an asset round-trip. */}
+      <div className="wf-intro-grain" aria-hidden="true" />
+
+      {/* Camera-shake wrapper — every animated child sits inside so the
+          shake at the tudum beat tilts the WHOLE composition (logo,
+          rings, orb, sparks, text) together. Applying shake to
+          individual layers would have them de-sync. */}
+      <div className="wf-intro-shake">
+        <div className="wf-intro-content">
+          {/* Expanding concentric rings — clean, not stripey */}
+          <div className="wf-intro-rings" aria-hidden="true">
+            <div className="wf-intro-ring-pulse wf-intro-ring-pulse--1" />
+            <div className="wf-intro-ring-pulse wf-intro-ring-pulse--2" />
+            <div className="wf-intro-ring-pulse wf-intro-ring-pulse--3" />
+          </div>
+
+          {/* Glowing orb that swells at the "tudum" beat */}
+          <div className="wf-intro-orb" aria-hidden="true" />
+
+          {/* Particle sparks drifting outward from the center */}
+          <div className="wf-intro-sparks" aria-hidden="true">
+            {[...Array(16)].map((_, i) => (
+              <div
+                key={i}
+                className="wf-intro-spark"
+                style={{
+                  '--angle': `${(360 / 16) * i}deg`,
+                  '--delay': `${0.2 + (i % 4) * 0.08}s`,
+                  '--distance': `${38 + (i % 5) * 6}vmin`,
+                }}
+              />
+            ))}
+          </div>
+
+          <div className="wf-intro-logo">
+            <span className="wf-intro-w">W</span>
+            <div className="wf-intro-ring" aria-hidden="true" />
+          </div>
+          <div className="wf-intro-text">
+            {'WARDOFLIX'.split('').map((ch, i) => (
+              <span key={i} className="wf-intro-char" style={{ animationDelay: `${1.05 + i * 0.05}s` }}>{ch}</span>
+            ))}
+          </div>
+          <div className="wf-intro-tagline wf-intro-tagline--quote">{quoteRef.current}</div>
+        </div>
+      </div>
+
+      {/* Lens flare — horizontal streak that sweeps across the logo at
+          the impact beat. Sits over the content (z-index above logo)
+          with mix-blend-mode: screen so it adds light rather than
+          covering. Animation is wf-flare-sweep (defined in App.css). */}
+      <div className="wf-intro-flare" aria-hidden="true" />
 
       {/* Bright flash at the "tudum" beat */}
       <div className="wf-intro-flash" />
