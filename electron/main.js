@@ -10,9 +10,12 @@ import { fileURLToPath } from 'node:url'
 import { fork } from 'node:child_process'
 import { createRequire } from 'node:module'
 
-// electron-updater is published as CommonJS; bridge it into our ESM module.
+// Local-folder updater. Replaces electron-updater for now — the GitHub
+// publish flow is paused while we sort out auth (see commit notes for
+// v1.7.0). Same event surface as electron-updater, so the IPC plumbing
+// and the renderer's UpdaterIndicator don't need to know the difference.
 const require = createRequire(import.meta.url)
-const { autoUpdater } = require('electron-updater')
+import { autoUpdater } from './local-updater.js'
 
 import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId, readCachedPolicySync } from './access-control.js'
 import { initDiscordPresence, setStreamingActivity, clearStreamingActivity, teardownDiscordPresence } from './discord-presence.js'
@@ -397,10 +400,13 @@ function createWindow() {
 }
 
 // ── Auto-updater ───────────────────────────────────────────────
-// Reads `latest.yml` from the URL configured in package.json > build.publish,
-// downloads the new installer in the background, then asks the user to
-// restart & install. In dev we still wire the IPC surface so the UI can
-// render, but `checkForUpdates` is a no-op.
+// Reads `latest.yml` from a local folder on disk (configured via
+// WF_UPDATE_LOCAL_PATH or %APPDATA%/WardoFlix/update-config.json),
+// copies the new installer into userData, then asks the user to restart
+// & install. In dev we still wire the IPC surface so the UI can render,
+// but `checkForUpdates` is a no-op. See electron/local-updater.js for
+// the implementation; the API mirrors electron-updater so this section
+// barely had to change.
 //
 // `updaterStatus` is the single source of truth mirrored to the renderer.
 // It's also returned synchronously by `updater:getStatus` so a late-mounted
@@ -422,6 +428,42 @@ function broadcastUpdaterStatus(patch = {}) {
   }
 }
 
+// Resolve the local-updater's source folder. Two configuration paths,
+// in priority order:
+//
+//   1. WF_UPDATE_LOCAL_PATH env var. Owner can set this once at the
+//      Windows User scope:
+//        [Environment]::SetEnvironmentVariable(
+//          "WF_UPDATE_LOCAL_PATH",
+//          "C:\Users\PC\streamflow\release",
+//          "User"
+//        )
+//      and every double-clicked launch inherits it.
+//
+//   2. %APPDATA%\WardoFlix\update-config.json with shape
+//        { "localPath": "C:\\Users\\PC\\streamflow\\release" }
+//      Easier for users who don't want to mess with env vars.
+//
+// Returns null when neither is set or the path doesn't exist on disk.
+// On a friend's machine that's the expected outcome — they just don't
+// auto-update until we wire a hosted source back up.
+function resolveUpdateLocalPath() {
+  const fromEnv = process.env.WF_UPDATE_LOCAL_PATH
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv
+  try {
+    const cfgPath = path.join(userData, 'update-config.json')
+    if (fs.existsSync(cfgPath)) {
+      const raw = fs.readFileSync(cfgPath, 'utf8')
+      const cfg = JSON.parse(raw)
+      const p = cfg?.localPath
+      if (p && typeof p === 'string' && fs.existsSync(p)) return p
+    }
+  } catch (e) {
+    log('[updater] update-config.json parse failed:', e?.message || e)
+  }
+  return null
+}
+
 function setupAutoUpdater() {
   // Route autoUpdater logs through our log file.
   autoUpdater.logger = {
@@ -430,6 +472,13 @@ function setupAutoUpdater() {
     error: (m) => log('[updater!]', m?.stack || m),
     debug: () => {},
   }
+
+  // Configure the local-folder source. Friends will get null here and
+  // every checkForUpdates call resolves with "you're on the latest" —
+  // the cleanest no-op state until we ship a real hosted source.
+  const localPath = resolveUpdateLocalPath()
+  autoUpdater.setLocalPath(localPath)
+  log(`[updater] local source = ${localPath || '(none — auto-update disabled)'}`)
 
   // We want explicit user consent on restart-to-install; auto-download is
   // fine because it happens silently in the background.

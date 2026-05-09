@@ -14,6 +14,8 @@ import {
 } from './lib/hooks.js'
 import { ToastHost, ShortcutsOverlay, DebugOverlay, toast } from './components/Overlays.jsx'
 import { WardoFlixIntro, pickPiracyQuote } from './components/WardoFlixIntro.jsx'
+import { PosterCard } from './components/PosterCard.jsx'
+import { ContentRow } from './components/ContentRow.jsx'
 // Storage layer — profiles, history, resume, watched, sub offsets,
 // intro marks, sub style, audio language pref, volume.
 import {
@@ -90,222 +92,8 @@ function HeroBanner({ items, type, onSelect, onStream }) {
   )
 }
 
-// ── Poster card with Netflix-style hover-trailer + rank + progress ──
-//
-// Each card:
-//  - Lazy-fetches the trailer YouTube key on first hover (cached on the
-//    server). After ~1.2s of continuous hover, an iframe slides in
-//    over the poster and starts the trailer muted (browser autoplay
-//    requires muted). Leaves on mouse-out, cancels if the user moves
-//    away before the dwell threshold.
-//  - Optional `rank` (1-10): renders an oversized numeral behind the
-//    poster, Netflix Top-10 style. The row decides which cards get
-//    one.
-//  - Optional `progress` (0-1): renders a thin red progress bar at
-//    the bottom of the card, showing where the user is in the title.
-//    Used by the Continue Watching row.
-function PosterCard({ item, type, onSelect, rank, progress }) {
-  const [hover, setHover] = useState('idle') // idle | pending | playing
-  const [trailerKey, setTrailerKey] = useState(null)
-  const dwellRef = useRef(null)
-  // Suppress hover-preview entirely when the user has the row in
-  // motion (drag-scroll or wheel-scroll) — otherwise every card
-  // briefly sees a mouseenter as posters fly past, and we'd kick off
-  // 30 trailer fetches in a panel-swipe.
-  const enter = () => {
-    if (hover !== 'idle') return
-    setHover('pending')
-    dwellRef.current = setTimeout(async () => {
-      // Already fetched? Skip the network roundtrip.
-      if (trailerKey) { setHover('playing'); return }
-      try {
-        // Prefix with __API_BASE__ — required in packaged Electron
-        // where the renderer runs from file:// and a bare /api/...
-        // path resolves to file:///api/... and 404s. Same fix the
-        // DetailModal trailer iframe applied at line 2216.
-        const apiBase = (typeof window !== 'undefined' && window.__API_BASE__) || ''
-        const r = await fetch(`${apiBase}/api/trailer-key/${type}/${item.id}`)
-        const data = await r.json().catch(() => ({}))
-        if (data.key) {
-          setTrailerKey(data.key)
-          setHover('playing')
-        } else {
-          setHover('idle') // no trailer for this title — never bother again
-        }
-      } catch { setHover('idle') }
-    }, 1200)
-  }
-  const leave = () => {
-    if (dwellRef.current) { clearTimeout(dwellRef.current); dwellRef.current = null }
-    setHover('idle')
-  }
-  // Cleanup on unmount so a card scrolling out mid-dwell doesn't fire
-  // a fetch into a dead component.
-  useEffect(() => () => { if (dwellRef.current) clearTimeout(dwellRef.current) }, [])
-
-  // The poster button itself. We render it inside a wrapper when ranked
-  // so the giant Top-10 numeral can live as a SIBLING (not a child) —
-  // the .row-poster button has overflow:hidden for image rounding, which
-  // would otherwise clip the numeral despite its negative left offset.
-  const card = (
-    <button
-      className={`row-poster ${hover === 'playing' ? 'row-poster--previewing' : ''}`}
-      onMouseEnter={enter}
-      onMouseLeave={leave}
-      onClick={() => onSelect({
-        id: item.id,
-        title: item.title || item.name,
-        name: item.name || null,
-        poster: item.poster_path,
-        backdrop: item.backdrop_path,
-        overview: item.overview,
-        date: item.release_date || item.first_air_date,
-        release_date: item.release_date || null,
-        first_air_date: item.first_air_date || null,
-        rating: item.vote_average,
-        type,
-      })}
-    >
-      {item.poster_path ? (
-        <img src={item.poster_path} alt="" loading="lazy" />
-      ) : (
-        <div className="poster-placeholder">{(item.title || item.name || '?')[0]}</div>
-      )}
-      {/* Hover trailer overlay. autoplay+mute is required by Chromium
-          for unattended starts; the embed drops controls and chrome
-          so the preview feels integrated rather than YouTube-y. */}
-      {hover === 'playing' && trailerKey && (
-        <iframe
-          className="row-poster-trailer"
-          src={`${(typeof window !== 'undefined' && window.__API_BASE__) || ''}/trailer?v=${trailerKey}&autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1`}
-          title="Trailer preview"
-          allow="autoplay; encrypted-media"
-          loading="lazy"
-        />
-      )}
-      {typeof progress === 'number' && progress > 0 && (
-        <div className="row-poster-progress" aria-hidden="true">
-          <div className="row-poster-progress-bar" style={{ width: `${Math.min(100, progress * 100)}%` }} />
-        </div>
-      )}
-      <div className="row-poster-info">
-        <span className="row-poster-title">{item.title || item.name}</span>
-        {item.vote_average > 0 && <span className="row-poster-rating">★ {item.vote_average.toFixed(1)}</span>}
-      </div>
-    </button>
-  )
-
-  if (!rank) return card
-  // Top-10 row: wrap the button so the numeral can sit OUTSIDE the
-  // button's clipped box. Keeps the poster's natural 2:3 aspect ratio
-  // intact; the numeral peeks out to the left, classic Netflix look.
-  return (
-    <div className="row-poster-cell row-poster-cell--ranked">
-      <span className="row-poster-rank" aria-hidden="true">{rank}</span>
-      {card}
-    </div>
-  )
-}
-
-// ── Content Row (horizontal scroll) ─────────────────────────────
-function ContentRow({ title, url, type, onSelect, showRanking = false }) {
-  const [items, setItems] = useState([])
-  const [loaded, setLoaded] = useState(false)
-  const [attempt, setAttempt] = useState(0) // bump to force refetch
-  const rowRef = useRef(null)
-  const [canScrollLeft, setCanScrollLeft] = useState(false)
-  const [canScrollRight, setCanScrollRight] = useState(false)
-  useEdgeHoverScroll(rowRef)
-
-  useEffect(() => {
-    let cancelled = false
-    setLoaded(false)
-    // Retry up to 3 times with exponential backoff. Covers the case where
-    // the server was still chewing on a stream request and the first
-    // catalog fetch came back empty.
-    const tryFetch = async (attempts = 0) => {
-      try {
-        const r = await fetch(url)
-        const d = await r.json().catch(() => ({}))
-        const results = d.results || []
-        if (cancelled) return
-        if (results.length === 0 && attempts < 2) {
-          setTimeout(() => { if (!cancelled) tryFetch(attempts + 1) }, 600 * (attempts + 1))
-          return
-        }
-        setItems(results)
-        setLoaded(true)
-      } catch {
-        if (cancelled) return
-        if (attempts < 2) {
-          setTimeout(() => { if (!cancelled) tryFetch(attempts + 1) }, 600 * (attempts + 1))
-          return
-        }
-        setLoaded(true)
-      }
-    }
-    tryFetch(0)
-    return () => { cancelled = true }
-  }, [url, attempt])
-
-  const updateScrollState = useCallback(() => {
-    const el = rowRef.current
-    if (!el) return
-    setCanScrollLeft(el.scrollLeft > 20)
-    setCanScrollRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 20)
-  }, [])
-
-  useEffect(() => {
-    const el = rowRef.current
-    if (!el) return
-    updateScrollState()
-    el.addEventListener('scroll', updateScrollState, { passive: true })
-    return () => el.removeEventListener('scroll', updateScrollState)
-  }, [items, updateScrollState])
-
-  useHorizontalRowGestures(rowRef, items)
-
-  const scroll = (dir) => {
-    const el = rowRef.current
-    if (!el) return
-    el.scrollBy({ left: dir * el.clientWidth * 0.75, behavior: 'smooth' })
-  }
-
-  if (!loaded || items.length === 0) return null
-
-  // When the row is ranked (Top 10), cap to 10 — the numeral wouldn't
-  // mean anything past that.
-  const displayItems = showRanking ? items.slice(0, 10) : items
-
-  return (
-    <div className={`content-row ${showRanking ? 'content-row--ranked' : ''}`}>
-      <h3 className="row-title">{title}</h3>
-      <div className="row-container">
-        {canScrollLeft && (
-          <button className="row-arrow row-arrow--left" onClick={() => scroll(-1)} aria-label="Scroll left">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
-          </button>
-        )}
-        <div className="row-posters" ref={rowRef}>
-          {displayItems.map((item, i) => (
-            <PosterCard
-              key={item.id}
-              item={item}
-              type={type}
-              onSelect={onSelect}
-              rank={showRanking ? i + 1 : null}
-            />
-          ))}
-        </div>
-        {canScrollRight && (
-          <button className="row-arrow row-arrow--right" onClick={() => scroll(1)} aria-label="Scroll right">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
+// ── PosterCard + ContentRow ─────────────────────────────────────
+// Both extracted to ./components/ in v1.7.0. Imports above.
 
 // ── Search Results Grid ─────────────────────────────────────────
 function SearchResults({ type, query, onSelect }) {
@@ -2520,6 +2308,15 @@ function PlayerControls({
     }
     setActiveSub(lang)
     setSubsMenuOpen(false)
+    // Persist the user's pick as their default language for next time —
+    // pairs with the auto-enable on track-load (subs effect in App body)
+    // so picking English once means every subsequent title silently
+    // shows English subs without another menu click. Storing 'off' as a
+    // sentinel for explicit no-subs preference.
+    try {
+      if (lang) localStorage.setItem('wardoflix:sub-lang-pref', lang)
+      else localStorage.setItem('wardoflix:sub-lang-pref', 'off')
+    } catch {}
   }
 
   // Keyboard shortcuts — Stremio/YouTube-style
@@ -3677,19 +3474,60 @@ function App() {
           // resolves the user may have hit Back and disposed the player.
           if (!playerRef.current || playerRef.current.isDisposed()) return
           setAvailableSubs(subs)
+          // Auto-enable user's preferred subtitle language. Stored at
+          // wardoflix:sub-lang-pref; the value is set whenever the
+          // user picks a language from the subs menu. Falls back to
+          // 'en' (most users who don't speak Dutch want English) if
+          // nothing is set. Sentinel value 'off' means the user
+          // explicitly turned subtitles off — respect that and do
+          // not auto-enable any track.
+          let preferredLang = null
+          try { preferredLang = localStorage.getItem('wardoflix:sub-lang-pref') } catch {}
+          if (!preferredLang) preferredLang = 'en'
+          // Pick the first subtitle whose lang matches preferred. Fall
+          // back to first available if nothing matches. If 'off' was
+          // stored, skip auto-enable entirely.
+          const preferredSub = preferredLang === 'off'
+            ? null
+            : (subs.find((s) => (s.lang || 'en') === preferredLang) || subs[0])
           subs.forEach((s) => {
             if (playerRef.current && !playerRef.current.isDisposed()) {
               try {
+                // Route through toAbsStreamUrl — native <track> elements
+                // bypass our window.fetch patch in main.jsx, so a bare
+                // /api/... path resolves against file:// in packaged
+                // builds and 404s. (This is the v1.7.0 subs-don't-show
+                // bug fix.)
+                const isPreferred = preferredSub && s === preferredSub
                 playerRef.current.addRemoteTextTrack({
                   kind: 'subtitles',
-                  src: `/api/subtitles/proxy?url=${encodeURIComponent(s.url)}`,
+                  src: toAbsStreamUrl(`/api/subtitles/proxy?url=${encodeURIComponent(s.url)}`),
                   srclang: s.lang || 'en',
                   label: s.langName || s.lang || 'Unknown',
-                  default: false,
+                  default: isPreferred,
                 }, false)
               } catch {}
             }
           })
+          // video.js doesn't always honour `default:true` on remote
+          // tracks added after the player initialised — it depends on
+          // the load order. Force-enable the preferred track ourselves
+          // a beat later, when the textTracks list is populated.
+          if (preferredSub) {
+            setTimeout(() => {
+              try {
+                const p = playerRef.current
+                if (!p || p.isDisposed()) return
+                const tracks = p.textTracks()
+                for (let i = 0; i < tracks.length; i++) {
+                  if (tracks[i].language === (preferredSub.lang || 'en')) {
+                    tracks[i].mode = 'showing'
+                    break
+                  }
+                }
+              } catch {}
+            }, 200)
+          }
         })
         .catch(() => {})
     }
@@ -3715,13 +3553,15 @@ function App() {
     for (let i = 0; i < remoteEls.length; i++) toRemove.push(remoteEls[i])
     toRemove.forEach((t) => player.removeRemoteTextTrack(t))
 
-    // Re-add with offset
+    // Re-add with offset. Same toAbsStreamUrl fix as the initial-load
+    // path above — bare /api/... bypasses the window.fetch patch
+    // because <track> elements use native resource loading.
     availableSubs.forEach((s) => {
       const params = new URLSearchParams({ url: s.url })
       if (subOffset) params.set('offset', String(subOffset))
       const track = player.addRemoteTextTrack({
         kind: 'subtitles',
-        src: `/api/subtitles/proxy?${params}`,
+        src: toAbsStreamUrl(`/api/subtitles/proxy?${params}`),
         srclang: s.lang || 'en',
         label: s.langName || s.lang || 'Unknown',
         default: false,

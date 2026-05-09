@@ -6,13 +6,9 @@
 
 A Netflix-style, Stremio-grade desktop app that streams torrents on demand,
 with fragmented-MP4 transcoding, full subtitle/audio-track support, casting,
-profiles, history sync, and a private telemetry dashboard. Built by Ward,
-for Ward, plus the few people he actually wants to share it with.
+profiles, and history sync.
 
-[Latest release](https://github.com/wardo93/wardoflix/releases) ·
-[Access policy](./ACCESS_CONTROL.md) ·
-[Security notes](./SECURITY.md) ·
-[Owner dashboard](./owner-dashboard/README.md)
+[Latest release](https://github.com/wardo93/wardoflix/releases)
 
 </div>
 
@@ -61,34 +57,9 @@ basement. Click → 5 seconds later, you're watching.
   per-title resume positions, "Continue Watching" carousel, manual
   remove from history, auto-mark-watched at 60s before end, "✓"
   badge on watched episodes.
-- **Updater** — built-in via electron-updater. New release on GitHub,
-  every running client checks within 4 hours, downloads the diff,
-  prompts to install. No package managers involved.
-
-### The "this is a personal app" features
-
-These keep WardoFlix from accidentally becoming a product:
-
-- **Access control** — a single `access.json` file in this repo decides
-  who can run the app. Each install generates a UUID; the file lists
-  who's allowed (`mode: allowlist`) or who's blocked (`blocked[]`).
-  Every launch fetches this file from GitHub raw and refuses to run if
-  the install isn't approved. See [ACCESS_CONTROL.md](./ACCESS_CONTROL.md).
-- **Owner dashboard** — a private Cloudflare Worker + Leaflet map shows
-  every active install with city-level (or GPS-precise, if Windows
-  Location Services is on) location, launch counts, version, friendly
-  name. Lets the owner see if the app has leaked beyond intended users
-  and revoke from one place. See [owner-dashboard/README.md](./owner-dashboard/README.md).
-- **Telemetry is opt-in via the policy file**. If `access.json` doesn't
-  configure it, no pings fire. If it does, every launch sends
-  `{installId, version, platform, geo}` (geo via Google Geolocation
-  with the project's API key) to the owner's Worker. No personal data,
-  no IP storage; the Worker stores just the UUID-keyed record.
-- **Kill switch** — adding an install ID to `blocked[]` and pushing
-  blocks that user within minutes (next launch). No re-build needed.
-- **Friendly names** — `userData/friendly-name.txt` lets a user label
-  their install. The owner can also override per-install names + map
-  pins via `install_overrides` in `access.json`.
+- **Updater** — built-in. Reads `latest.yml` from a configured local
+  folder, copies the new installer over, prompts to install. No
+  package managers involved.
 
 ---
 
@@ -100,11 +71,11 @@ These keep WardoFlix from accidentally becoming a product:
 │                                                            │
 │   ┌─────────────────┐         ┌─────────────────────┐    │
 │   │  Renderer (UI)  │◄────────│   Main process      │    │
-│   │  React 19       │   IPC   │  - access gate      │    │
-│   │  video.js       │         │  - server fork      │    │
-│   │  custom         │         │  - autoupdater       │    │
-│   │  controls       │         │  - permission gate   │    │
-│   └────────┬────────┘         │  - log rotation      │    │
+│   │  React 19       │   IPC   │  - server fork      │    │
+│   │  video.js       │         │  - autoupdater       │    │
+│   │  custom         │         │  - permission gate   │    │
+│   │  controls       │         │  - log rotation      │    │
+│   └────────┬────────┘         │                      │    │
 │            │  fetch            └──────────┬──────────┘    │
 │            │ http://localhost:3000        │ fork          │
 │            ▼                              ▼               │
@@ -133,10 +104,10 @@ These keep WardoFlix from accidentally becoming a product:
 └──────────────────────────────────────────────────────────┘
                        │
                        ▼  (network)
-   ┌────────────┬──────────────┬────────────┬────────────┐
-   │   TMDB     │  Torrentio   │ OpenSubs   │  GitHub raw│
-   │ (catalog)  │  (sources)   │ (subtitles)│ (access.json)
-   └────────────┴──────────────┴────────────┴────────────┘
+   ┌────────────┬──────────────┬────────────┐
+   │   TMDB     │  Torrentio   │ OpenSubs   │
+   │ (catalog)  │  (sources)   │ (subtitles)│
+   └────────────┴──────────────┴────────────┘
                        │
                        ▼
             BitTorrent swarm (peers)
@@ -185,11 +156,9 @@ for the rare cases where the probe lied.
 - **Frontend**: React 19, video.js 8, custom controls, Vite 7
 - **Backend**: Node 20 + Express 4, WebTorrent 2, fluent-ffmpeg, dotenv
 - **Desktop shell**: Electron 32, electron-builder 25 (NSIS installer),
-  electron-updater 6 with GitHub releases provider
+  custom local-folder updater
 - **External APIs**: TMDB (catalog), Torrentio + APIBAY + YTS (sources),
-  OpenSubtitles (via Stremio addon), Google Geolocation (telemetry geo)
-- **Owner infra (private)**: Cloudflare Worker + KV (telemetry endpoint),
-  Leaflet + CartoDB tiles (dashboard map)
+  OpenSubtitles (via Stremio addon)
 
 ---
 
@@ -269,37 +238,28 @@ roadmap is whatever I want WardoFlix to feel like next.
 
 - A web/mobile version. WardoFlix is a desktop app, by design. Mobile
   needs cloud transcoding infrastructure I'm not building.
-- A user-account system. Profiles are local. Telemetry is owner-side.
-  No "sign up" flow, ever.
-- A public release. The access-control file is the wall, and that wall
-  is going to stay there.
+- A user-account system. Profiles are local. No "sign up" flow, ever.
+- A public release. This is built for a small group of people; there
+  are no plans to ship it more widely.
 
 ---
 
 ## Project structure
 
 ```
-streamflow/                  ← repo name (not yet renamed; see SECURITY.md)
-├── access.json              ← live-fetched access policy (owner edits)
+streamflow/
 ├── electron/
-│   ├── main.js              ← Electron main: server, updater, access gate
-│   ├── access-control.js    ← UUID + allowlist + telemetry helper
-│   └── preload.cjs          ← exposes wardoflixUpdater + wardoflixAccess
+│   ├── main.js              ← Electron main: server, updater
+│   └── preload.cjs          ← context-bridge surface for the renderer
 ├── server/
 │   └── index.js             ← Express + WebTorrent + ffmpeg + APIs
 ├── src/
-│   ├── App.jsx              ← React root (5,000+ lines, will split)
+│   ├── App.jsx              ← React root
 │   ├── App.css              ← all styles
 │   ├── main.jsx             ← root + URL/EventSource patches for file://
 │   └── index.css            ← global resets
-├── owner-dashboard/         ← NOT shipped — Worker + map for owner
-│   ├── worker.js            ← Cloudflare Worker source
-│   ├── dashboard.html       ← Leaflet map page
-│   └── README.md            ← deployment walkthrough
 ├── build/                   ← installer assets (icon)
 ├── release/                 ← electron-builder output (.gitignored)
-├── ACCESS_CONTROL.md        ← how to manage who can run the app
-├── SECURITY.md              ← what's exposed in the installer + how to harden
 └── package.json
 ```
 
@@ -308,15 +268,10 @@ streamflow/                  ← repo name (not yet renamed; see SECURITY.md)
 ## Operational notes
 
 - **Logs**: `%APPDATA%\WardoFlix\wardoflix.log`. Rotates at 10 MB,
-  keeps 5 generations. Includes server stdout + electron-updater + access
-  decisions + renderer diagnostics.
+  keeps 5 generations. Includes server stdout + updater +
+  renderer diagnostics.
 - **Cache**: `%APPDATA%\WardoFlix\cache\` — torrent file storage,
   api-cache (TMDB / Torrentio / APIBAY / YTS responses, TTL'd).
-- **Install ID**: `%APPDATA%\WardoFlix\install-id.txt`. Survives updates.
-- **Manual coordinates**: drop a `manual-coords.txt` containing
-  `lat,lon` to pin yourself on the dashboard with custom coords.
-- **Manual friendly name**: drop a `friendly-name.txt` to label your
-  install with a name of your choosing instead of the OS username.
 
 ---
 

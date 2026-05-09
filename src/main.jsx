@@ -122,7 +122,11 @@ function btnStyle(primary) {
   window.__API_BASE__ = API_BASE
   if (!isFile) return
 
-  const REWRITE = /^\/(api|stream|remux)(\/|\?|$)/
+  // Match every server route the renderer might fetch. /trailer was
+  // missing originally — fixed manually at the call site in v1.6.3,
+  // adding it here in v1.7.0 so future trailer-using code paths
+  // don't have to remember the workaround.
+  const REWRITE = /^\/(api|stream|remux|trailer)(\/|\?|$)/
   const rewrite = (url) => {
     if (typeof url !== 'string') return url
     return REWRITE.test(url) ? API_BASE + url : url

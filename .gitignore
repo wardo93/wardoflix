@@ -36,6 +36,15 @@ publish*.txt
 notes.txt
 TODO.txt
 
+# Op-sec docs and the owner-side dashboard. These describe the
+# kill-switch URLs, telemetry endpoints, install IDs and GPS coords
+# of friends, and the Cloudflare Worker code — none of which need to
+# be in a public repo. Kept locally under .private/ for reference.
+.private/
+SECURITY.md
+ACCESS_CONTROL.md
+owner-dashboard/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
