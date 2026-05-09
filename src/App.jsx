@@ -1721,7 +1721,55 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
     }
   }
 
-  const episodeList = isTv && seasons.length ? (bySeason[selectedSeason] || []) : []
+  // Episode list = the union of (a) torrent placeholders the server seeded
+  // from `tv/{id}.seasons[].episode_count` and (b) actual episodes TMDB
+  // returned for this specific season at /api/episodes/{id}/{season}.
+  // The summary count is sometimes stale (TMDB reports e.g. "8 episodes"
+  // when the per-season endpoint actually has 10 — common during ongoing
+  // shows or when a season's metadata was just refreshed). v1.7.2 fix:
+  // fill any gap so every episode TMDB knows about is clickable. Missing
+  // entries get an `unavailable: true` placeholder; the per-click
+  // /api/torrent-episode lookup will still find sources for them.
+  const episodeList = useMemo(() => {
+    if (!isTv || !seasons.length) return []
+    const placeholders = bySeason[selectedSeason] || []
+    const stillsKeys = Object.keys(episodeStills).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+    const maxStillEp = stillsKeys.length ? Math.max(...stillsKeys) : 0
+    const maxPlaceholderEp = placeholders.length
+      ? Math.max(...placeholders.map((p) => Number(p.episode) || 0))
+      : 0
+    const total = Math.max(maxStillEp, maxPlaceholderEp, placeholders.length)
+    if (total === 0) return placeholders
+
+    // Build a map from episode number to the existing placeholder, so we
+    // can keep any data the server already attached (quality, magnet,
+    // unavailable flag) and only synthesise the truly missing slots.
+    const byEp = new Map()
+    for (const p of placeholders) {
+      const n = Number(p.episode)
+      if (Number.isFinite(n) && n > 0) byEp.set(n, p)
+    }
+
+    const out = []
+    for (let e = 1; e <= total; e++) {
+      const existing = byEp.get(e)
+      if (existing) { out.push(existing); continue }
+      // Synthesised placeholder for an episode the server's bySeason
+      // didn't include. The user can still click it; the per-episode
+      // torrent lookup runs at click-time, no different from any
+      // unavailable slot the server seeded itself.
+      out.push({
+        season: Number(selectedSeason),
+        episode: e,
+        quality: `S${String(selectedSeason).padStart(2, '0')}E${String(e).padStart(2, '0')}`,
+        seeds: 0,
+        size: '',
+        magnet: null,
+        unavailable: true,
+      })
+    }
+    return out
+  }, [bySeason, selectedSeason, episodeStills, isTv, seasons])
   // Only fall through to "flat torrent list" for actual movies. A TV show
   // with no seasons yet is still a TV show — show a loading/retry state,
   // not the single-source movie layout. Fixes "Game of Thrones shows like
@@ -4028,38 +4076,52 @@ function App() {
           setStreamBaseUrl(data.isRemuxed ? abs : null)
           startProgress(abs)
 
-          // ── Stream-liveness watchdog ─────────────────────────────
+          // ── Stream-liveness watchdog (v1.7.2 rewrite) ───────────
           //
-          // Authoritative liveness signal: the VIDEO ELEMENT itself.
-          // If Chromium fires `loadeddata` or `playing`, bytes have been
-          // decoded — the stream is unambiguously alive regardless of
-          // what SSE says about peer counts. SSE is kept as a secondary
-          // signal but is no longer required.
+          // The previous watchdog declared a stream "alive" the moment
+          // the video element fired `loadeddata` or `progress` — but
+          // those events fire as soon as Chromium has *any* bytes,
+          // including the few KB of MP4 header that WebTorrent yanked
+          // from a single flaky peer before the swarm went silent. The
+          // user got stuck on "1 peer / 0 peers" forever because the
+          // watchdog had committed to the candidate after 200ms of
+          // metadata grab, even though no actual video data was ever
+          // going to flow. Reproducible on cold popular-show torrents
+          // (The Boys S01E01, lots of others) where Torrentio reports
+          // healthy seed counts that turn out to be stale.
           //
-          // Why the rewrite: prior versions relied solely on SSE
-          // (`progress.peers > 0 || progress.downloaded > 0`). Whenever
-          // the SSE channel buffered, errored, or just took its sweet
-          // time to deliver the first message, the watchdog killed
-          // perfectly working streams at the timeout. The user reported
-          // seeing the stream play for 16-30s before being switched
-          // out — that's the player decoding bytes (working!) while
-          // SSE silently died (irrelevant!).
+          // The new contract: bytes must KEEP flowing. We track the
+          // END of the buffered range every second; if it doesn't
+          // advance by at least 0.5s of content within 30 seconds
+          // (and we haven't seen 3+ seconds of buffer growth, which
+          // unambiguously means data is flowing), the stream is dead
+          // and we move to the next alternative.
           //
-          // New logic — ALIVE if ANY of:
-          //   - video element fires 'loadeddata' (data buffered, decoder
-          //     ready)
-          //   - video element fires 'playing'
-          //   - video element fires 'progress' (HTMLMediaElement event:
-          //     buffered range expanded)
-          //   - SSE reports peers > 0
-          //   - SSE reports downloaded > 0
-          //   - HEAD probe to /remux URL succeeds with 200/206 + body
+          // Buffer-end is the right signal because:
+          //   - It comes directly from the media element — no SSE race
+          //   - It only advances when actual decodable bytes land
+          //   - "Stalled" video without buffer growth is exactly the
+          //     failure mode the user experiences
+          //   - It still ALIVE-flags fast on healthy streams (typical
+          //     buffered.end > 3s within ~5–8s of the click)
           //
-          // DEAD only when 45s elapsed AND none of the above ever fired.
-          const WATCHDOG_MS = 45000
+          // SSE is kept as a parallel weak signal: if the server
+          // reports >1 peer + > 1MB downloaded, we extend the stall
+          // deadline another 30s — the bytes are en route, the player
+          // just hasn't decoded enough to grow the buffered range yet.
+          const WATCHDOG_FIRST_BUFFER_MS  = 30000  // 30s to see ANY buffer growth
+          const WATCHDOG_STALL_MS         = 25000  // 25s after first growth, no more growth = dead
+          const WATCHDOG_HARD_MAX_MS      = 60000  // ultimate ceiling
+          const HEALTHY_BUFFER_SECONDS    = 3.0    // buffered range > 3s = unambiguously alive
+
           const deadChain = await new Promise((resolve) => {
             let decided = false
-            const liveBy = (signal) => {
+            const startedAt = Date.now()
+            let lastBufferedEnd = 0
+            let lastGrowthAt = startedAt
+            let attachedPlayer = null
+
+            const finish = (dead, why) => {
               if (decided) return
               decided = true
               try {
@@ -4069,74 +4131,98 @@ function App() {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     tag: 'watchdog',
-                    msg: `alive via ${signal} progress=${JSON.stringify(p)}`,
+                    msg: `${dead ? 'DEAD' : 'ALIVE'} via=${why} bufEnd=${lastBufferedEnd.toFixed(2)} sse=${JSON.stringify(p)}`,
                   }),
                 }).catch(() => {})
               } catch {}
               cleanup()
-              resolve(false) // not dead
-            }
-            const declareDead = (why) => {
-              if (decided) return
-              decided = true
-              try {
-                const p = streamProgressRef.current
-                fetch('/api/debug-log', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    tag: 'watchdog',
-                    msg: `DEAD why=${why} progress=${JSON.stringify(p)}`,
-                  }),
-                }).catch(() => {})
-              } catch {}
-              cleanup()
-              resolve(true)
+              resolve(dead)
             }
 
-            // Hook the video element directly. The player might not be
-            // mounted yet (the source effect runs asynchronously after
-            // setSource), so we poll for it briefly.
-            const playerEvents = ['loadeddata', 'playing', 'progress', 'canplay']
-            let attachedPlayer = null
-            const onPlayerSignal = (ev) => liveBy(`video.${ev}`)
-            const handlerByEvent = {}
-            for (const ev of playerEvents) handlerByEvent[ev] = () => onPlayerSignal(ev)
+            const checkBuffered = () => {
+              const p = playerRef.current
+              if (!p || p.isDisposed?.()) return 0
+              try {
+                const buf = p.buffered?.()
+                if (!buf || !buf.length) return 0
+                let maxEnd = 0
+                for (let i = 0; i < buf.length; i++) {
+                  const end = buf.end(i)
+                  if (end > maxEnd) maxEnd = end
+                }
+                return maxEnd
+              } catch { return 0 }
+            }
 
             const tryAttachPlayer = () => {
               const p = playerRef.current
               if (!p || p.isDisposed?.() || attachedPlayer) return
-              try {
-                for (const ev of playerEvents) p.on(ev, handlerByEvent[ev])
-                attachedPlayer = p
-              } catch {}
+              attachedPlayer = p
             }
             const playerAttachId = setInterval(tryAttachPlayer, 200)
-            tryAttachPlayer() // try immediately
+            tryAttachPlayer()
 
-            const ssePoll = setInterval(() => {
-              const p = streamProgressRef.current
-              if ((p?.peers || 0) > 0 || (p?.downloaded || 0) > 0) {
-                liveBy('sse')
+            const tick = setInterval(() => {
+              const now = Date.now()
+
+              // User explicitly aborted (back button, switched titles).
+              if (!streamAliveRef.current) return finish(false, 'aborted')
+
+              // Hard ceiling — no matter what, decide by 60s.
+              if (now - startedAt > WATCHDOG_HARD_MAX_MS) {
+                return finish(lastBufferedEnd < HEALTHY_BUFFER_SECONDS, 'hard-max-60s')
               }
-            }, 500)
 
-            const abortPoll = setInterval(() => {
-              if (!streamAliveRef.current) liveBy('aborted')
-            }, 500)
+              const bufEnd = checkBuffered()
+              if (bufEnd > lastBufferedEnd + 0.5) {
+                // Buffer is growing — bytes are flowing.
+                lastBufferedEnd = bufEnd
+                lastGrowthAt = now
+                if (bufEnd >= HEALTHY_BUFFER_SECONDS) {
+                  return finish(false, `healthy-${bufEnd.toFixed(1)}s-buffered`)
+                }
+              }
 
-            const wd = setTimeout(() => declareDead('timeout-45s'), WATCHDOG_MS)
+              const sinceLastGrowth = now - lastGrowthAt
+              const sse = streamProgressRef.current
+
+              // Phase 1: nothing's grown yet. Allow up to FIRST_BUFFER_MS.
+              if (lastBufferedEnd === 0) {
+                if (now - startedAt > WATCHDOG_FIRST_BUFFER_MS) {
+                  // Even with no buffer growth, give it a tiny grace if
+                  // SSE says peers + bytes are flowing — the player
+                  // just hasn't decoded the first frame yet.
+                  if ((sse?.peers || 0) > 1 && (sse?.downloaded || 0) > 2 * 1024 * 1024) {
+                    // 2MB+ downloaded but Chromium still not buffering
+                    // means a codec/container the demuxer is choking on
+                    // → /remux fallback handles it; keep the stream.
+                    return finish(false, 'sse-bytes-flowing-no-buffer')
+                  }
+                  return finish(true, 'no-first-buffer-30s')
+                }
+                return
+              }
+
+              // Phase 2: started buffering, then stalled.
+              if (sinceLastGrowth > WATCHDOG_STALL_MS) {
+                // Last-chance: if the server reports a recent download
+                // jump even though our buffer didn't grow, the bytes
+                // are flowing into ffmpeg's remux pipe and a fresh
+                // moov atom will land any second. Extend stall deadline
+                // another 15s once.
+                if ((sse?.peers || 0) > 1 && (sse?.downloaded || 0) > lastBufferedEnd * 100000) {
+                  // (heuristic: downloaded bytes > 100KB per buffered
+                  // second = there's pipeline progress not yet decoded)
+                  lastGrowthAt = now - WATCHDOG_STALL_MS + 15000
+                  return
+                }
+                return finish(true, `stalled-${Math.round(sinceLastGrowth / 1000)}s`)
+              }
+            }, 1000)
 
             function cleanup() {
-              try { clearTimeout(wd) } catch {}
-              try { clearInterval(ssePoll) } catch {}
-              try { clearInterval(abortPoll) } catch {}
+              try { clearInterval(tick) } catch {}
               try { clearInterval(playerAttachId) } catch {}
-              if (attachedPlayer) {
-                try {
-                  for (const ev of playerEvents) attachedPlayer.off(ev, handlerByEvent[ev])
-                } catch {}
-              }
             }
           })
 
