@@ -117,6 +117,20 @@ function loadBundledEnv() {
 }
 const bundledEnv = loadBundledEnv()
 
+// Apply bundled .env values to the MAIN process's environment too,
+// so anything in main.js (notably the local-updater resolver below)
+// can read them via plain process.env.X. We don't overwrite values
+// already set in the real env — actual env vars win, .env is a
+// fallback for owner-machine config that doesn't ship as a real env.
+// Without this, putting WF_UPDATE_LOCAL_PATH=... in .env (the only
+// way most people configure things) had no effect because the .env
+// loader only forwarded values to the SERVER fork, not to main.
+for (const [k, v] of Object.entries(bundledEnv)) {
+  if (process.env[k] === undefined || process.env[k] === '') {
+    process.env[k] = v
+  }
+}
+
 // ── Launch backend ─────────────────────────────────────────────
 // In dev: `npm start` runs the server via concurrently, so we skip the fork.
 // In prod: the server lives inside the asar at resources/app.asar/server/

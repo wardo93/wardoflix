@@ -290,13 +290,17 @@ export function loadResumeMap() {
 export function saveResumePosition(meta, time, duration) {
   const key = resumeKey(meta)
   if (!key || !isFinite(time) || time < 30) return
-  // If within 60s of the end, clear the resume position AND flip the
-  // item into the "watched" set so the episode list can render a ✓.
-  if (duration > 0 && time > duration - 60) {
-    clearResumePosition(meta)
-    markWatched(meta)
-    return
-  }
+  // v1.7.4 fix: do NOT clear-when-near-end here. The duration() the
+  // player reports for live-streaming /remux URLs is the duration of
+  // the BUFFERED portion, not the full video — so as the user
+  // watches, duration always trails currentTime by a few seconds.
+  // The old logic interpreted that as "within 60s of end" and wiped
+  // the resume entry on every save, manifesting as "every replay
+  // restarts at 0:00 instead of resuming where I left off".
+  // Real-end clearing is now exclusively done via the player's
+  // 'ended' event handler in App.jsx, which gates on the ffprobed
+  // server-side duration AND requires elapsed playback time > 60s
+  // — far more reliable for live streams.
   try {
     const map = loadResumeMap()
     map[key] = { t: Math.floor(time), d: duration > 0 ? Math.floor(duration) : 0, at: Date.now() }
@@ -401,7 +405,11 @@ export function subStyleKeyForActive() {
   const id = getActiveProfileId()
   return id ? `wardoflix:sub-style:${id}` : 'wardoflix:sub-style'
 }
-export const DEFAULT_SUB_STYLE = { size: 100, position: 0, weight: 'normal', bg: 'shadow' }
+// v1.7.4: default size bumped 100 → 140. The video.js TextTrack
+// renderer's intrinsic size at 100% is unreadably small at typical
+// viewing distance for 1080p+ content; 140 lands in the comfortable
+// "Netflix Medium" zone. Users can dial up/down via the timing panel.
+export const DEFAULT_SUB_STYLE = { size: 140, position: 0, weight: 'normal', bg: 'shadow' }
 export function loadSubStyle() {
   try {
     const raw = localStorage.getItem(subStyleKeyForActive())
