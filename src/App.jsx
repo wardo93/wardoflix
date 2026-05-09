@@ -2731,9 +2731,17 @@ function PlayerControls({
                   <>
                     <div className="cc-timing-row">
                       <span className="cc-timing-label">Sub size</span>
-                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.max(50, (s.size || 100) - 10) }))}>−</button>
-                      <span className="cc-timing-value">{subStyle?.size || 100}%</span>
-                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.min(200, (s.size || 100) + 10) }))}>+</button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.max(60, (s.size || 140) - 10) }))}>−</button>
+                      <span className="cc-timing-value">
+                        {subStyle?.size || 140}% · {Math.round((subStyle?.size || 140) * 0.22)}px
+                      </span>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.min(260, (s.size || 140) + 10) }))}>+</button>
+                      {/* Quick presets so the user doesn't have to ten-step
+                          their way to a comfortable size. */}
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: 100 }))} title="Small (22px)">S</button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: 140 }))} title="Medium (31px) — default">M</button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: 180 }))} title="Large (40px)">L</button>
+                      <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: 220 }))} title="X-Large (48px)">XL</button>
                     </div>
                     <div className="cc-timing-row">
                       <span className="cc-timing-label">Position</span>
@@ -5089,16 +5097,29 @@ function App() {
           cue elements pick up size/position/background overrides. The
           CSS variables let one declaration drive every cue rendered
           anywhere in the app. */}
+      {/* Subtitle styling — applied globally so video.js TextTrack
+          cues pick it up everywhere. v1.7.5 rewrite: switched from
+          percentage-based font-size (which compounds onto video.js's
+          already-tiny intrinsic baseline — 140% of "tiny" is still
+          "tiny") to PIXEL-BASED sizing scaled from a 22px baseline.
+          So `subStyle.size` 100 → 22px, 140 → 30.8px, 200 → 44px.
+          22px is roughly the Netflix/Stremio default size at 1080p
+          viewing distance — readable for everyone, including users
+          with low-vision presets, without an obvious "huge subtitle"
+          look at the top of the slider. */}
       <style>{`
         .vjs-text-track-cue,
         .vjs-text-track-cue * {
-          font-size: ${subStyle.size}% !important;
-          font-weight: ${subStyle.weight === 'bold' ? '700' : '400'} !important;
+          font-size: calc(22px * ${subStyle.size} / 100) !important;
+          line-height: 1.25 !important;
+          font-weight: ${subStyle.weight === 'bold' ? '700' : '500'} !important;
           ${subStyle.bg === 'box'
-            ? 'background-color: rgba(0,0,0,0.75) !important; padding: 0.15em 0.4em !important; border-radius: 3px !important; text-shadow: none !important;'
+            ? 'background-color: rgba(0,0,0,0.78) !important; padding: 0.15em 0.5em !important; border-radius: 4px !important; text-shadow: none !important;'
             : subStyle.bg === 'none'
               ? 'background-color: transparent !important; text-shadow: none !important;'
-              : /* shadow (default) */ 'background-color: transparent !important; text-shadow: 1px 1px 2px rgba(0,0,0,0.85), -1px -1px 2px rgba(0,0,0,0.85), 1px -1px 2px rgba(0,0,0,0.85), -1px 1px 2px rgba(0,0,0,0.85) !important;'}
+              : /* shadow (default) — heavier, sharper outline so
+                   subs read against bright/light backdrops */
+                'background-color: transparent !important; text-shadow: 0 0 4px rgba(0,0,0,0.95), 1px 1px 2px rgba(0,0,0,0.9), -1px -1px 2px rgba(0,0,0,0.9), 1px -1px 2px rgba(0,0,0,0.9), -1px 1px 2px rgba(0,0,0,0.9) !important;'}
         }
         .vjs-text-track-display {
           bottom: ${subStyle.position}% !important;

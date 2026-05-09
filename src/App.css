@@ -2799,6 +2799,13 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   align-items: center;
   gap: 0.25rem;
 }
+/* The timing panel is rendered as a sibling of .cc-sub-wrap inside
+   .cc-bar-right, but anchored with `bottom: calc(100% + 0.5rem)`.
+   Without `position: relative` here it bubbled up to .custom-controls
+   (which spans the whole player) and ended up off-screen ABOVE the
+   viewport — which is why "Adjust timing" looked like it did nothing.
+   v1.7.5 fix: anchor the timing panel to the bar instead. */
+.cc-bar-right { position: relative; }
 
 .cc-btn {
   background: none;
@@ -2950,6 +2957,7 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   position: absolute;
   bottom: calc(100% + 0.5rem);
   right: 0;
+  z-index: 30;            /* above the bar, below modals/toasts */
   /* v1.7.4 fix: column layout. The .cc-timing-row children are
      supposed to stack vertically (each has its own internal
      flex-row of label + buttons + value), but the panel itself was
