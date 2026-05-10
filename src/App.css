@@ -1816,72 +1816,99 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
    to the surrounding button and selects the title (rather than
    getting swallowed by the iframe). Faded in for a beat so the
    transition doesn't feel jarring. */
-.row-poster-trailer {
-  position: absolute;
-  inset: 0;
+/* v1.7.7 — In-card iframe + per-card mute toggle deleted. The new
+   approach is a fixed-position popup portaled to <body> so the
+   trailer renders at proper 16:9 (no black bars) and bigger than
+   the poster. Styles below. The .row-poster--previewing class is
+   still added to the button so the row's hover-scale effect still
+   reads "this card is the source of the preview". */
+
+/* Subtle highlight on the source poster while its preview popup is
+   open — keeps the visual link between popup and origin. */
+.row-poster--previewing {
+  box-shadow: 0 0 0 2px var(--accent), 0 12px 36px -8px rgba(0, 0, 0, 0.7);
+  z-index: 11;
+}
+
+/* ─── Hover-trailer preview popup (v1.7.7) ─────────────────────
+   480 × 270 (16:9 — no black bars on standard YouTube trailers)
+   floating card portaled to <body>. Position computed in JSX so it
+   sits above the source poster (or below if there's no room above)
+   and tracks the poster on scroll/resize. Always silent, captions
+   auto-enabled via the YouTube embed flags. */
+.poster-preview-popup {
+  position: fixed;
+  z-index: 80;            /* above topbar (50), below modals (200) */
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-deep, #0a0502);
+  /* Warm-amber outline + heavy drop-shadow so the popup reads as
+     a floating card rather than a flat overlay. */
+  box-shadow:
+    0 24px 64px -12px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(232, 168, 56, 0.30),
+    0 0 0 4px rgba(232, 168, 56, 0.10);
+  animation: poster-preview-rise 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  /* The popup itself receives mouse events — needed so onMouseEnter/
+     Leave on the wrapping div fire correctly to keep the preview
+     alive while the user is reading subtitles. The iframe inside is
+     pointer-events:none so YouTube controls don't intercept. */
+  pointer-events: auto;
+}
+@keyframes poster-preview-rise {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.poster-preview-iframe {
+  display: block;
   width: 100%;
   height: 100%;
   border: 0;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.4s ease-in;
-  z-index: 1;
+  background: #000;
+  pointer-events: none;     /* let popup div handle hover; YT chrome
+                               irrelevant for a passive preview */
 }
-.row-poster--previewing .row-poster-trailer {
-  opacity: 1;
-}
-
-/* Floating mute toggle on the hover trailer. Sits in the bottom-right
-   corner of the playing card so it doesn't overlap the title chip on
-   the bottom-left. Pointer-events explicitly auto so it overrides the
-   trailer iframe's pointer-events:none and actually receives clicks. */
-.row-poster-trailer-audio {
+/* Title strip at the bottom of the popup. Translucent dark gradient
+   so the trailer stays the focus; sets the context so the user knows
+   what they're previewing without tracking back to the poster. */
+.poster-preview-meta {
   position: absolute;
-  right: 8px;
-  bottom: 50px;             /* clear of the row-poster-info bar */
-  z-index: 3;               /* above iframe (z:1) and progress (z:2) */
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  background: rgba(11, 7, 18, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 50%;
-  color: rgba(255, 255, 255, 0.85);
-  cursor: pointer;
-  pointer-events: auto;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.25s ease, transform 0.25s ease, background 0.18s ease;
-  /* Defensive — span doesn't get button defaults but resetting in case */
-  user-select: none;
-  -webkit-user-select: none;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem 0.65rem;
+  background: linear-gradient(to top, rgba(8, 4, 1, 0.92) 0%, rgba(8, 4, 1, 0.55) 60%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
 }
-.row-poster--previewing ~ .row-poster-trailer-audio,
-.row-poster .row-poster-trailer-audio {
-  /* No-op selector pair — kept simple: button shows when its parent
-     poster is in the previewing state. The button is rendered inside
-     .row-poster so we target it directly. */
+.poster-preview-title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display, 'Syne'), sans-serif;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.005em;
 }
-/* Show only when the trailer iframe itself is rendered (we only emit
-   the button conditionally in JSX, but the fade-in deserves the same
-   timing as the iframe so it doesn't pop in before the trailer). */
-.row-poster--previewing .row-poster-trailer-audio,
-.row-poster-trailer-audio {
-  opacity: 1;
-  transform: translateY(0);
+.poster-preview-rating {
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
-.row-poster-trailer-audio:hover {
-  background: rgba(11, 7, 18, 0.92);
-  border-color: rgba(255, 255, 255, 0.28);
-  color: #fff;
+@media (prefers-reduced-motion: reduce) {
+  .poster-preview-popup { animation: none; }
 }
-.row-poster-trailer-audio:focus-visible {
-  outline: 2px solid var(--accent, #e8a838);
-  outline-offset: 2px;
-}
-.row-poster-trailer-audio svg { display: block; }
 
 /* Top-10 numbered ranking — oversized translucent numeral that
    peeks out to the LEFT of each poster, classic Netflix Top-10 look.
