@@ -5350,7 +5350,37 @@ function App() {
                         onComplete={() => {
                           setShowIntro(false)
                           const p = playerRef.current
-                          if (p && !p.isDisposed()) p.play()
+                          if (!p || p.isDisposed()) return
+                          // v1.7.8 black-screen fix: when the player
+                          // is paused at currentTime=0 during the
+                          // intro, Chromium's MSE decoder sometimes
+                          // idles without producing a first video
+                          // frame. play() then resumes audio while
+                          // video stays black until enough additional
+                          // bytes arrive — manifesting as "stream
+                          // starts but screen is black" on first try.
+                          // Going back + Continue Watching worked
+                          // because the second player saw a populated
+                          // buffer immediately.
+                          //
+                          // Fix: nudge currentTime by a frame's worth
+                          // (33ms ≈ 1 frame at 30fps) right before
+                          // play(). The seek forces the decoder to
+                          // flush and render a frame, so video and
+                          // audio start in lockstep when play() runs.
+                          try {
+                            const t = p.currentTime() || 0
+                            p.currentTime(Math.max(0, t + 0.033))
+                          } catch {}
+                          // requestAnimationFrame ensures the seek
+                          // commits to Chromium before play() — without
+                          // this the two calls can coalesce and the
+                          // seek effectively becomes a no-op.
+                          requestAnimationFrame(() => {
+                            try {
+                              if (!p.isDisposed()) p.play()
+                            } catch {}
+                          })
                         }}
                       />
                     )}
