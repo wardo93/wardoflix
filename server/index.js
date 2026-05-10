@@ -696,6 +696,51 @@ app.get('/api/details/:type/:tmdbId', async (req, res) => {
 // Cheap "just the trailer key" endpoint for hover previews. The full
 // /api/details fetch is ~10-20KB and includes cast/similar/external
 // IDs — overkill for "what trailer should I auto-play when the user
+// "Because You Watched X" — TMDB recommendations endpoint. Powers
+// the post-binge discovery rows on the home screen. Shape matches
+// the rest of /api/catalog so ContentRow can render it unchanged.
+// 6h cache because TMDB recommendations are stable for a given
+// title and the bandwidth is real (10–20 cards × poster+backdrop
+// per row × multiple rows on screen).
+const RECOMMENDATIONS_CACHE = new Map()
+const RECOMMENDATIONS_TTL = 6 * 60 * 60 * 1000
+app.get('/api/recommendations/:type/:tmdbId', async (req, res) => {
+  const { type, tmdbId } = req.params
+  if (!TMDB_API_KEY) return res.json({ results: [] })
+  const mediaType = (type === 'tv' || type === 'series') ? 'tv' : 'movie'
+  const cacheKey = `${mediaType}:${tmdbId}`
+  const cached = RECOMMENDATIONS_CACHE.get(cacheKey)
+  if (cached && Date.now() - cached.t < RECOMMENDATIONS_TTL) {
+    return res.json({ results: cached.results })
+  }
+  try {
+    const data = await tmdbFetch(`${mediaType}/${tmdbId}/recommendations`, {})
+    const results = (data.results || [])
+      .filter((r) => r.id && (r.poster_path || r.backdrop_path))
+      .slice(0, 20)
+      .map((r) => ({
+        id: r.id,
+        title: r.title || r.name,
+        name: r.name || null,
+        poster_path: r.poster_path ? `${TMDB_IMAGE}${r.poster_path}` : null,
+        backdrop_path: r.backdrop_path ? `${TMDB_BACKDROP}${r.backdrop_path}` : null,
+        overview: r.overview || '',
+        vote_average: r.vote_average || 0,
+        release_date: r.release_date || null,
+        first_air_date: r.first_air_date || null,
+        genre_ids: r.genre_ids || [],
+      }))
+    RECOMMENDATIONS_CACHE.set(cacheKey, { results, t: Date.now() })
+    if (RECOMMENDATIONS_CACHE.size > 500) {
+      const it = RECOMMENDATIONS_CACHE.keys()
+      for (let i = 0; i < 50; i++) RECOMMENDATIONS_CACHE.delete(it.next().value)
+    }
+    res.json({ results })
+  } catch (err) {
+    res.json({ results: [], error: err.message })
+  }
+})
+
 // hovers this poster card?" Returns just {key} (YouTube ID) or
 // {key: null} if there's nothing. Cached aggressively because trailer
 // data for a title essentially never changes after release.

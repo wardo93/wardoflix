@@ -1139,6 +1139,138 @@ function BecauseYouWatchedRow({ entry, onSelect }) {
   )
 }
 
+// ── Surprise Me button ─────────────────────────────────────────
+// Picks a random title from the user's library OR a random page of
+// trending/popular catalog and opens its detail modal. Netflix's
+// "Play Something" reimagined as a pre-play discovery moment so the
+// user gets to decide if the surprise is actually appealing before
+// the stream starts — vs Netflix's pure auto-play which often felt
+// disrespectful of the user's time.
+//
+// Random-mix logic:
+//   - 30% draw from library (if non-empty) → familiar comfort picks
+//   - 70% draw from a random catalog category → real surprises
+//   - Fall back to category-only when library is empty
+function SurpriseMeButton({ onSelectTitle }) {
+  const [busy, setBusy] = useState(false)
+  const handleSurprise = useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      // Library shortcut — but only if it has content AND the dice
+      // say "go familiar". Most clicks should still pull from the
+      // wider catalog so the feature feels like discovery, not
+      // re-shuffling the user's bookmarks.
+      const lib = (() => { try { return loadLibrary() } catch { return [] } })()
+      if (lib.length > 0 && Math.random() < 0.3) {
+        const pick = lib[Math.floor(Math.random() * lib.length)]
+        onSelectTitle(pick)
+        return
+      }
+      // Catalog draw: random type × random category. Each combination
+      // resolves to a different TMDB endpoint with different titles,
+      // so two clicks rarely land in the same pool.
+      const types = ['movies', 'tv']
+      const cats = ['trending', 'popular', 'top', 'new']
+      const type = types[Math.floor(Math.random() * types.length)]
+      const cat = cats[Math.floor(Math.random() * cats.length)]
+      const r = await fetch(`/api/catalog/${type}?category=${cat}`)
+      const d = await r.json().catch(() => ({}))
+      const items = (d.results || []).filter((it) => it.id && (it.poster_path || it.backdrop_path))
+      if (!items.length) {
+        toast('No surprises right now — TMDB is taking a moment. Try again?', 'warning')
+        return
+      }
+      const pick = items[Math.floor(Math.random() * items.length)]
+      onSelectTitle({
+        id: pick.id,
+        title: pick.title || pick.name,
+        name: pick.name || null,
+        poster: pick.poster_path,
+        backdrop: pick.backdrop_path,
+        overview: pick.overview,
+        date: pick.release_date || pick.first_air_date,
+        release_date: pick.release_date || null,
+        first_air_date: pick.first_air_date || null,
+        rating: pick.vote_average,
+        type,
+        genre_ids: pick.genre_ids || [],
+      })
+    } catch (e) {
+      console.error('[surprise]', e)
+      toast('Surprise pick failed — server hiccuped', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, onSelectTitle])
+
+  return (
+    <button
+      className={`surprise-btn ${busy ? 'is-busy' : ''}`}
+      onClick={handleSurprise}
+      disabled={busy}
+      title="Pick something for me"
+      aria-label="Surprise me — pick a random title"
+    >
+      {/* Sparkle/dice icon — three dots arranged like a die's "3" face,
+          plus a sparkle to suggest randomness without being literally
+          a die (which reads as "gambling" to some users). */}
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 3l1.4 3.6L17 8l-3.6 1.4L12 13l-1.4-3.6L7 8l3.6-1.4L12 3z" fill="currentColor" />
+        <path d="M19 14l.7 1.8L21.5 16.5l-1.8.7L19 19l-.7-1.8L16.5 16.5l1.8-.7L19 14z" fill="currentColor" />
+        <path d="M5 14l.7 1.8L7.5 16.5l-1.8.7L5 19l-.7-1.8L2.5 16.5l1.8-.7L5 14z" fill="currentColor" />
+      </svg>
+      <span>{busy ? 'Picking…' : 'Surprise me'}</span>
+    </button>
+  )
+}
+
+// ── "Because You Watched X" rows (v1.7.6) ──────────────────────
+// Pulls TMDB's recommendations for the user's most-recently-played
+// titles and renders one ContentRow per source title. Caps at 2 rows
+// so the home screen doesn't become an endless wall of recs (and so
+// duplicates between sources are less likely). Falls through silently
+// if the user has no history or all their recent titles are in the
+// same recommendation pool.
+function BecauseYouWatchedRows({ onSelectTitle }) {
+  const history = useHistory()
+  // Pick up to 2 distinct most-recent titles. dedupe by id so the
+  // user doesn't see "Because you watched The Office" twice when
+  // they binged 12 episodes of it.
+  const seeds = useMemo(() => {
+    const seen = new Set()
+    const out = []
+    for (const entry of history) {
+      if (!entry?.id) continue
+      const key = `${entry.type || 'movies'}:${entry.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({
+        id: entry.id,
+        type: entry.type || 'movies',
+        title: entry.title,
+      })
+      if (out.length >= 2) break
+    }
+    return out
+  }, [history])
+
+  if (!seeds.length) return null
+  return (
+    <>
+      {seeds.map((seed) => (
+        <ContentRow
+          key={`because-${seed.type}-${seed.id}`}
+          title={`Because you watched ${seed.title}`}
+          url={`/api/recommendations/${seed.type}/${seed.id}`}
+          type={seed.type}
+          onSelect={onSelectTitle}
+        />
+      ))}
+    </>
+  )
+}
+
 // ── Browse Page ─────────────────────────────────────────────────
 // Layout: Stremio-style left sidebar (Home / Movies / Series / genres)
 // + main content area. View state:
@@ -1319,6 +1451,13 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
               aria-label="Search"
             />
           </div>
+          {/* Surprise Me — Netflix's "Play Something" reimagined: pick
+              a random title from the user's library OR a fresh page of
+              trending/popular catalog and open its detail modal. Useful
+              when the user can't decide what to watch (a real, common
+              problem) — one click away in the browse-nav so it's always
+              reachable. */}
+          <SurpriseMeButton onSelectTitle={onSelectTitle} />
         </div>
 
         {isSearching ? (
@@ -1332,6 +1471,12 @@ function Browse({ onSelectTitle, onPlayHistory, activeProfile }) {
             <HeroBanner items={heroItems} type="movies" onSelect={onSelectTitle} />
             <div className="rows-section">
               <ContinueWatchingRow onPlay={onPlayHistory} onInfo={onSelectTitle} />
+              {/* Personalised recommendations — Netflix-style "Because
+                  you watched X" rows pulled from TMDB recs for the
+                  user's most recently-played titles. Renders nothing
+                  on a fresh install (no history); fades in as soon as
+                  the user has watched anything. */}
+              <BecauseYouWatchedRows onSelectTitle={onSelectTitle} />
               <ContentRow title="Top 10 Movies This Week" url={`/api/catalog/movies?category=trending`} type="movies" onSelect={onSelectTitle} showRanking />
               <ContentRow title="Top 10 Series This Week" url={`/api/catalog/tv?category=trending`} type="tv" onSelect={onSelectTitle} showRanking />
               <ContentRow title="Popular Movies" url={`/api/catalog/movies?category=popular`} type="movies" onSelect={onSelectTitle} />
@@ -1824,6 +1969,48 @@ function DetailModal({ item, onClose, onStream, onSelectItem }) {
                 </svg>
                 {libraryEntryPresent ? 'In your library' : 'Add to library'}
               </button>
+              {/* Random Episode — Popcorn-Time-style discovery for
+                  long-running shows where any episode is a good
+                  watch (Simpsons, Family Guy, Seinfeld, sitcoms in
+                  general). Picks a uniformly random season+episode
+                  from the loaded bySeason map and resolves its source
+                  through the same handleUnavailableEpisode flow as a
+                  manual click — so it doesn't matter whether the
+                  picked episode had a torrent in the initial sweep. */}
+              {isTv && Object.keys(bySeason).length > 0 && (
+                <button
+                  className="modal-trailer-btn modal-random-ep"
+                  onClick={() => {
+                    const validSeasons = Object.keys(bySeason)
+                      .filter((s) => s !== '0' && (bySeason[s]?.length || 0) > 0)
+                    if (!validSeasons.length) return
+                    const sNum = validSeasons[Math.floor(Math.random() * validSeasons.length)]
+                    const eps = bySeason[sNum] || []
+                    if (!eps.length) return
+                    const ep = eps[Math.floor(Math.random() * eps.length)]
+                    if (!ep) return
+                    // If the episode already has a magnet from the
+                    // server-side sweep, stream it directly. Otherwise
+                    // route through the on-demand resolver.
+                    if (ep.magnet) {
+                      if (item?.id && ep.quality) saveQualityPref(item.id, ep.quality)
+                      handleStream(ep.magnet, { season: ep.season, episode: ep.episode })
+                    } else {
+                      handleUnavailableEpisode({ season: Number(ep.season), episode: Number(ep.episode) })
+                    }
+                  }}
+                  title="Pick a random episode for me"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+                    <path d="M3 3h6v6H3V3zm0 12h6v6H3v-6zm12 0h6v6h-6v-6zM15 3h6v6h-6V3z" />
+                    <circle cx="6" cy="6" r="1.4" fill="var(--bg-deep, #120a04)" />
+                    <circle cx="18" cy="6" r="1.4" fill="var(--bg-deep, #120a04)" />
+                    <circle cx="6" cy="18" r="1.4" fill="var(--bg-deep, #120a04)" />
+                    <circle cx="18" cy="18" r="1.4" fill="var(--bg-deep, #120a04)" />
+                  </svg>
+                  Random Episode
+                </button>
+              )}
             </div>
             {details?.tagline && <p className="modal-tagline">"{details.tagline}"</p>}
             {item.overview && <p className="modal-overview">{item.overview}</p>}
@@ -2729,6 +2916,33 @@ function PlayerControls({
                 )}
                 {setSubStyle && (
                   <>
+                    {/* Whole-style presets (v1.7.6). One click sets
+                        size + bg + weight together. Most users never
+                        need the granular controls; they just want
+                        "Netflix-like" or "Cinema" and to be done. */}
+                    <div className="cc-timing-row">
+                      <span className="cc-timing-label">Style preset</span>
+                      <button
+                        className="cc-timing-btn"
+                        onClick={() => setSubStyle({ size: 140, position: 0, weight: 'normal', bg: 'shadow' })}
+                        title="Default — medium, drop shadow"
+                      >Default</button>
+                      <button
+                        className="cc-timing-btn"
+                        onClick={() => setSubStyle({ size: 160, position: 0, weight: 'bold', bg: 'shadow' })}
+                        title="Netflix — large, bold, drop shadow"
+                      >Netflix</button>
+                      <button
+                        className="cc-timing-btn"
+                        onClick={() => setSubStyle({ size: 180, position: 8, weight: 'normal', bg: 'shadow' })}
+                        title="Cinema — extra large, lifted off the bottom edge"
+                      >Cinema</button>
+                      <button
+                        className="cc-timing-btn"
+                        onClick={() => setSubStyle({ size: 130, position: 0, weight: 'normal', bg: 'box' })}
+                        title="Caption Box — medium, with translucent black background"
+                      >Caption</button>
+                    </div>
                     <div className="cc-timing-row">
                       <span className="cc-timing-label">Sub size</span>
                       <button className="cc-timing-btn" onClick={() => setSubStyle((s) => ({ ...s, size: Math.max(60, (s.size || 140) - 10) }))}>−</button>
@@ -2960,6 +3174,121 @@ function findNextEpisode(meta) {
 
 // Toast / Shortcuts / Debug overlays now live in src/components/Overlays.jsx
 
+// ── Next-Episode Countdown (v1.7.6) ─────────────────────────────
+// Netflix-style overlay that appears in the bottom-right when an
+// episode ends. Shows a 8-second visual progress ring + the next
+// episode's label, with Cancel / Play-now buttons. Auto-fires
+// onConfirm when the timer expires.
+//
+// Designed to be cancellable in EVERY axis: click Cancel, press
+// Escape, click anywhere outside the card. The Esc handler is
+// scoped to the overlay so it doesn't fight the player's own.
+function NextEpisodeCountdown({ info, onCancel, onConfirm }) {
+  const { next, meta, startedAt, duration } = info
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 100)
+    return () => clearInterval(id)
+  }, [])
+  // Fire onConfirm exactly once when the timer expires.
+  const fired = useRef(false)
+  useEffect(() => {
+    const elapsed = now - startedAt
+    if (elapsed >= duration && !fired.current) {
+      fired.current = true
+      onConfirm()
+    }
+  }, [now, startedAt, duration, onConfirm])
+  // Escape cancels.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onConfirm() }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel, onConfirm])
+
+  const elapsed = Math.min(duration, now - startedAt)
+  const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000))
+  const pct = Math.min(100, (elapsed / duration) * 100)
+  const epLabel = `S${String(next.season).padStart(2, '0')}E${String(next.episode).padStart(2, '0')}`
+
+  return (
+    <div className="next-ep-overlay" role="dialog" aria-label="Next episode">
+      <div className="next-ep-card">
+        <div className="next-ep-thumb" aria-hidden="true">
+          {/* Show ring — visual countdown that drains as time
+              passes. Pure SVG so it renders crisp at any size. */}
+          <svg viewBox="0 0 64 64" width="56" height="56">
+            <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(248, 238, 211, 0.18)" strokeWidth="3" />
+            <circle
+              cx="32" cy="32" r="28" fill="none"
+              stroke="var(--accent, #e8a838)"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeDasharray={`${2 * Math.PI * 28}`}
+              strokeDashoffset={`${2 * Math.PI * 28 * (1 - pct / 100)}`}
+              transform="rotate(-90 32 32)"
+              style={{ transition: 'stroke-dashoffset 0.1s linear' }}
+            />
+            <text x="32" y="38" textAnchor="middle" fill="var(--text)" fontSize="20" fontWeight="700" fontFamily="var(--font-display, Syne)">{remaining}</text>
+          </svg>
+        </div>
+        <div className="next-ep-info">
+          <span className="next-ep-label">Next episode in {remaining}s</span>
+          <span className="next-ep-title">
+            {meta?.title ? `${meta.title} · ${epLabel}` : epLabel}
+          </span>
+        </div>
+        <div className="next-ep-actions">
+          <button className="next-ep-btn next-ep-btn--ghost" onClick={onCancel}>Cancel</button>
+          <button className="next-ep-btn next-ep-btn--accent" onClick={onConfirm}>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><polygon points="5,3 19,12 5,21" /></svg>
+            Play now
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Still Watching? prompt (v1.7.6) ─────────────────────────────
+// After 3 consecutive auto-plays, gate the next one behind a full
+// "are you still watching" confirmation. Netflix's binge guard —
+// prevents bandwidth burn when the user fell asleep.
+function StillWatchingPrompt({ info, onCancel, onConfirm }) {
+  const { next, meta, consecutive } = info
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+      else if (e.key === 'Enter') { e.preventDefault(); onConfirm() }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel, onConfirm])
+  const epLabel = `S${String(next.season).padStart(2, '0')}E${String(next.episode).padStart(2, '0')}`
+  return (
+    <div className="still-watching-overlay" role="dialog" aria-modal="true">
+      <div className="still-watching-card">
+        <h2 className="still-watching-title">Still watching?</h2>
+        <p className="still-watching-body">
+          You've auto-played <strong>{consecutive}</strong> episodes in a row.
+          {meta?.title && <> Up next is <strong>{meta.title} · {epLabel}</strong>.</>}
+        </p>
+        <div className="still-watching-actions">
+          <button className="still-watching-btn still-watching-btn--ghost" onClick={onCancel}>
+            I'm done
+          </button>
+          <button className="still-watching-btn still-watching-btn--accent" onClick={onConfirm}>
+            Continue watching
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── App ─────────────────────────────────────────────────────────
 function App() {
   const [tab, setTab] = useState('browse')
@@ -2975,6 +3304,16 @@ function App() {
   const [detailItem, setDetailItem] = useState(null)
   const [playingMetadata, setPlayingMetadata] = useState(null)
   const [streamWarning, setStreamWarning] = useState('')
+  // Next-episode auto-play UX. Replaces v1.7.5's "silently switch to
+  // next episode" behaviour with a Netflix-style countdown overlay
+  // and (after 3 in a row) a "Still Watching?" gate.
+  //   nextEpCountdown   = { next, meta, startedAt, duration } | null
+  //   stillWatching     = { next, meta, consecutive } | null
+  //   autoplayCountRef  = number of consecutive auto-plays this
+  //                       session (reset on user-initiated stream)
+  const [nextEpCountdown, setNextEpCountdown] = useState(null)
+  const [stillWatching, setStillWatching] = useState(null)
+  const autoplayCountRef = useRef(0)
   const [streamProgress, setStreamProgress] = useState(null)
   const [availableSubs, setAvailableSubs] = useState([])
   const [subOffset, setSubOffset] = useState(0)
@@ -3426,16 +3765,36 @@ function App() {
         return
       }
       // Genuine end-of-show — clear resume mark, flag watched, queue
-      // the next episode.
+      // the next episode behind a Netflix-style countdown.
       try { clearResumePosition(meta) } catch {}
       try { markWatched(meta) } catch {}
       const next = findNextEpisode(meta)
       if (!next || !handleStreamRef.current) return
-      handleStreamRef.current(next.magnet, {
-        ...meta,
-        season: next.season,
-        episode: next.episode,
-      })
+      // v1.7.6: instead of immediately auto-playing, surface the
+      // countdown overlay so the user can cancel before the next
+      // episode pulls in (saves bandwidth + respects the user's
+      // "I'm done for tonight" intent). After 3 consecutive
+      // auto-plays we escalate to a full "Still Watching?" prompt
+      // that requires explicit confirmation — Netflix's binge guard.
+      const consecutive = (autoplayCountRef.current || 0) + 1
+      if (consecutive >= 3) {
+        // Show the still-watching modal; the modal's "Continue"
+        // button is what triggers the actual stream.
+        setStillWatching({
+          next,
+          meta,
+          consecutive,
+        })
+      } else {
+        // Show countdown overlay; on expiry it fires handleStream.
+        setNextEpCountdown({
+          next,
+          meta,
+          startedAt: Date.now(),
+          duration: 8000, // 8s — enough to dismiss casually, short
+                          // enough to feel auto-pilot for binge mode
+        })
+      }
     })
 
     // ── Restore volume/mute pref (so the next session starts where
@@ -3948,6 +4307,21 @@ function App() {
     // switched profiles. Without this snapshot, addToHistory reads the
     // *current* active profile at write time, which is the wrong one.
     const streamProfileId = getActiveProfileId()
+
+    // Reset autoplay-counter on USER-initiated streams. Anything tagged
+    // with `__autoplay: true` is the next-episode countdown firing —
+    // those increment instead. Without this gate, the "Still Watching"
+    // prompt would never show because the counter would reset every
+    // time a new ep loaded (regardless of who triggered it).
+    if (metadata?.__autoplay) {
+      autoplayCountRef.current = (autoplayCountRef.current || 0) + 1
+    } else {
+      autoplayCountRef.current = 0
+    }
+    // Always clear any pending countdown / still-watching prompts —
+    // a fresh stream supersedes whatever was queued.
+    setNextEpCountdown(null)
+    setStillWatching(null)
 
     // Stremio-style flow: if we were handed episode metadata but no magnet
     // (e.g. autoplay-next-episode on an unavailable slot), resolve it via
@@ -5092,6 +5466,55 @@ function App() {
 
       <UpdateAvailableModal />
       <ToastHost />
+
+      {/* Next-episode countdown overlay (v1.7.6) — Netflix-style:
+          when an episode ends and there's a next, show a 8-second
+          countdown with "Cancel" + "Play now" buttons. Cancel keeps
+          the user on the finished frame; Play now skips the wait;
+          letting the timer expire fires handleStream with the
+          autoplay flag set. */}
+      {nextEpCountdown && (
+        <NextEpisodeCountdown
+          info={nextEpCountdown}
+          onCancel={() => setNextEpCountdown(null)}
+          onConfirm={() => {
+            const { next, meta } = nextEpCountdown
+            setNextEpCountdown(null)
+            handleStream(next.magnet, {
+              ...meta,
+              season: next.season,
+              episode: next.episode,
+              __autoplay: true,
+            })
+          }}
+        />
+      )}
+
+      {/* Still-watching prompt (v1.7.6) — fires after 3 consecutive
+          auto-plays. No auto-expire: requires explicit confirmation
+          to continue. Same modal layer as the detail modal so it's
+          unmissable. */}
+      {stillWatching && (
+        <StillWatchingPrompt
+          info={stillWatching}
+          onCancel={() => {
+            // User confirmed they're done. Reset the autoplay counter
+            // so a future user-initiated stream starts fresh.
+            autoplayCountRef.current = 0
+            setStillWatching(null)
+          }}
+          onConfirm={() => {
+            const { next, meta } = stillWatching
+            setStillWatching(null)
+            handleStream(next.magnet, {
+              ...meta,
+              season: next.season,
+              episode: next.episode,
+              __autoplay: true,
+            })
+          }}
+        />
+      )}
 
       {/* Subtitle style sheet — applied globally so video.js text-track
           cue elements pick up size/position/background overrides. The

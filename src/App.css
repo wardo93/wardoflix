@@ -1281,6 +1281,258 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   max-width: 360px;
 }
 
+/* Surprise Me — Netflix-style "Play Something" reimagined as a
+   pre-play discovery moment. Lives next to the search box in the
+   browse-nav. Warm amber-tinted button that glows on hover so it
+   reads as "the special action" not "another nav button". */
+.surprise-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.6rem;
+  padding: 0.45rem 0.9rem;
+  font-family: var(--font);
+  font-size: 0.83rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+  background: linear-gradient(135deg,
+    rgba(232, 168, 56, 0.10) 0%,
+    rgba(196, 90, 58, 0.06) 100%);
+  border: 1px solid rgba(232, 168, 56, 0.30);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.22s var(--ease-cozy, var(--ease));
+  white-space: nowrap;
+  user-select: none;
+}
+.surprise-btn:hover {
+  color: var(--bg-deep);
+  background: linear-gradient(135deg,
+    var(--accent) 0%,
+    var(--accent-hover) 100%);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 18px -4px var(--accent-glow),
+    0 0 0 2px rgba(255, 220, 156, 0.18);
+}
+.surprise-btn:active {
+  transform: translateY(0);
+}
+.surprise-btn:disabled,
+.surprise-btn.is-busy {
+  opacity: 0.55;
+  cursor: progress;
+  transform: none;
+}
+.surprise-btn svg {
+  display: block;
+  /* Subtle continuous shimmer on the sparkle icon — sells the
+     randomness vibe without being distracting. */
+  animation: surprise-shimmer 2.4s ease-in-out infinite;
+}
+@keyframes surprise-shimmer {
+  0%, 100% { opacity: 0.85; transform: rotate(0deg); }
+  50%      { opacity: 1;    transform: rotate(8deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .surprise-btn svg { animation: none; }
+}
+
+/* ─── Next-Episode Countdown overlay (v1.7.6) ──────────────────
+   Bottom-right card with a draining SVG progress ring + "Cancel"
+   and "Play now" actions. Sits high in z-index so it surfaces over
+   the player chrome but stays below the topbar. */
+.next-ep-overlay {
+  position: fixed;
+  right: 1.4rem;
+  bottom: 1.4rem;
+  z-index: 200;
+  pointer-events: none;       /* let video clicks through outside the card */
+}
+.next-ep-card {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 320px;
+  max-width: 420px;
+  padding: 0.85rem 1rem;
+  background: linear-gradient(135deg,
+    rgba(34, 24, 16, 0.96) 0%,
+    rgba(46, 32, 22, 0.96) 100%);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow:
+    0 16px 48px -12px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(232, 168, 56, 0.08);
+  animation: next-ep-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes next-ep-rise {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.next-ep-thumb { flex-shrink: 0; }
+.next-ep-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.next-ep-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+.next-ep-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.next-ep-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.next-ep-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font);
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.18s var(--ease);
+  white-space: nowrap;
+}
+.next-ep-btn--ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+.next-ep-btn--ghost:hover {
+  color: var(--text);
+  background: rgba(248, 238, 211, 0.06);
+  border-color: rgba(248, 238, 211, 0.25);
+}
+.next-ep-btn--accent {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: var(--bg-deep);
+  box-shadow: 0 4px 12px -2px var(--accent-glow);
+}
+.next-ep-btn--accent:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -4px var(--accent-glow-strong);
+}
+
+/* ─── Still Watching prompt (v1.7.6) ───────────────────────────
+   Full-screen modal — Netflix's binge guard. Centered card with
+   warm amber accent matching the rest of the palette. */
+.still-watching-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 4, 1, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: still-watching-fade 0.25s ease;
+}
+@keyframes still-watching-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.still-watching-card {
+  max-width: 460px;
+  margin: 0 1.5rem;
+  padding: 2rem 2.2rem;
+  background: linear-gradient(135deg,
+    rgba(46, 32, 22, 0.98) 0%,
+    rgba(34, 24, 16, 0.98) 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow:
+    0 20px 60px -10px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(232, 168, 56, 0.10);
+  animation: still-watching-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes still-watching-rise {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.still-watching-title {
+  margin: 0 0 0.85rem;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.still-watching-body {
+  margin: 0 0 1.5rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+.still-watching-body strong { color: var(--text); }
+.still-watching-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+}
+.still-watching-btn {
+  padding: 0.55rem 1.2rem;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.18s var(--ease);
+}
+.still-watching-btn--ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+.still-watching-btn--ghost:hover {
+  color: var(--text);
+  background: rgba(248, 238, 211, 0.06);
+  border-color: rgba(248, 238, 211, 0.25);
+}
+.still-watching-btn--accent {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: var(--bg-deep);
+  box-shadow: 0 4px 12px -2px var(--accent-glow);
+}
+.still-watching-btn--accent:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -4px var(--accent-glow-strong);
+}
+
+/* Modal "Random Episode" button — same shape as trailer / library
+   buttons, just a different icon. The amber edge tells the user
+   it's a power feature next to the other warm-tinted actions. */
+.modal-random-ep svg {
+  margin-right: 2px;
+}
+
 .search-box input {
   width: 240px;
   padding: 0.55rem 1rem 0.55rem 2.4rem;
