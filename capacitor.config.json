@@ -1,0 +1,32 @@
+{
+  "$schema": "https://capacitorjs.com/configs/capacitor.config.schema.json",
+  "appId": "com.wardoflix.app",
+  "appName": "WardoFlix",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true,
+    "webContentsDebuggingEnabled": true,
+    "minWebViewVersion": 88
+  },
+  "server": {
+    "androidScheme": "http",
+    "hostname": "localhost",
+    "iosScheme": "http",
+    "allowNavigation": [
+      "localhost",
+      "127.0.0.1",
+      "*.themoviedb.org",
+      "*.tmdb.org",
+      "*.opensubtitles.org",
+      "*.opensubtitles.com",
+      "*.opensubtitles-servers.com",
+      "torrentio.strem.fun",
+      "torrentio.strem.io",
+      "opensubtitles-v3.strem.io",
+      "www.youtube-nocookie.com",
+      "www.googleapis.com",
+      "raw.githubusercontent.com"
+    ]
+  }
+}
