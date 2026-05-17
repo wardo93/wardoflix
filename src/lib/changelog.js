@@ -13,6 +13,15 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.9.3',
+    date: '2026-05-17',
+    title: 'Hover trailers: fixed YouTube error 153',
+    items: [
+      'YouTube was rejecting embed playback for videos whose owners restrict embedding (most indie/small-channel trailers) — symptom: "Watch video on YouTube · Error 153 · Video player configuration error" inside the popup.',
+      'Root cause: the v1.9.0 Referrer-Policy: no-referrer security header was sending zero referer to YouTube, so embed-restricted videos saw the request as "from unknown origin" and refused. Carved a route-specific exception for /trailer that sends strict-origin-when-cross-origin instead. Every other route keeps the strictest no-referrer.',
+    ],
+  },
+  {
     version: '1.9.2',
     date: '2026-05-17',
     title: 'Hover trailers fixed (black-screen + double-popup)',

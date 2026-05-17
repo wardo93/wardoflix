@@ -352,10 +352,24 @@ app.use((req, res, next) => {
   if (!url.startsWith('/trailer')) {
     res.setHeader('X-Frame-Options', 'DENY')
   }
-  res.setHeader('Referrer-Policy', 'no-referrer')
+  // v1.9.3 — Referrer-Policy was 'no-referrer' globally, which broke
+  // YouTube embed playback for any video whose owner restricts
+  // embedding (most indie/small-channel trailers). YouTube error 153.
+  //
+  // Fix: on /trailer, send 'strict-origin-when-cross-origin' so
+  // YouTube sees "Referer: http://localhost:3000/" (origin only, no
+  // path) and lets the embed play. Every other route keeps the
+  // strictest 'no-referrer' since it's the right default — no other
+  // route embeds third-party content.
+  if (url.startsWith('/trailer')) {
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  } else {
+    res.setHeader('Referrer-Policy', 'no-referrer')
+  }
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()')
   // /trailer needs cross-origin-embed permission too — same reason
-  // as above. Other routes stay same-site.
+  // as the X-Frame-Options carve-out above. Other routes stay
+  // same-site.
   if (url.startsWith('/trailer')) {
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
   } else {
