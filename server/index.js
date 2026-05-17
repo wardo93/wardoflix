@@ -340,12 +340,27 @@ app.use(cors({
 
 // Security headers (lightweight in-house version of Helmet — keeps
 // our deps lean). Applied to every response.
+//
+// v1.9.2 fix: /trailer is INTENTIONALLY designed to be embedded in
+// the renderer's iframe as a YouTube wrapper, so it gets X-Frame-
+// Options omitted. Every other route stays DENY. Without this
+// carve-out, every hover-trailer iframe got refused by Chromium and
+// rendered as a black square.
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff')
-  res.setHeader('X-Frame-Options', 'DENY')
+  const url = req.url || ''
+  if (!url.startsWith('/trailer')) {
+    res.setHeader('X-Frame-Options', 'DENY')
+  }
   res.setHeader('Referrer-Policy', 'no-referrer')
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()')
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-site')
+  // /trailer needs cross-origin-embed permission too — same reason
+  // as above. Other routes stay same-site.
+  if (url.startsWith('/trailer')) {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  } else {
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site')
+  }
   next()
 })
 

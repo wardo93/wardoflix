@@ -26,6 +26,22 @@ const HIDE_DELAY_MS = 220 // grace period when mouse leaves poster, so
                           // the user can travel into the popup card
                           // (and back) without losing the preview
 
+// v1.9.2 — cross-card coordination so only ONE trailer popup is ever
+// visible. Previous behaviour: each PosterCard owned its own hover
+// state with no awareness of siblings. Moving cursor from poster A
+// past A's popup briefly (cancelling its hide) then onto poster B
+// (starting B's dwell) ended with both popups open at once. Fix:
+// a module-level event bus. Whenever ANY card transitions out of
+// 'idle' state, it broadcasts an "active" event with its own id.
+// Every other card listens and force-dismisses if its id doesn't
+// match. Simple, no shared React context needed.
+const _activeTrailerEvents = new EventTarget()
+function announceActiveTrailer(cardId) {
+  try {
+    _activeTrailerEvents.dispatchEvent(new CustomEvent('active', { detail: { cardId } }))
+  } catch {}
+}
+
 // v1.7.9: wrapped in React.memo so the card only re-renders when its
 // own props change. Without this, every parent state change in App.jsx
 // (volume, current time, mouse-parallax tick, etc.) ripples down
@@ -40,6 +56,11 @@ function PosterCardInner({ item, type, onSelect, rank, progress }) {
   const dwellRef = useRef(null)
   const hideTimerRef = useRef(null)
   const buttonRef = useRef(null)
+  // v1.9.2 — stable per-instance id for the cross-card coordination
+  // bus. useState lazy init runs once on mount and never changes,
+  // so memo'd cards keep the same id across renders. random base36
+  // is collision-safe enough for the number of cards on screen.
+  const [cardId] = useState(() => Math.random().toString(36).slice(2))
 
   const apiBase = (typeof window !== 'undefined' && window.__API_BASE__) || ''
 
@@ -70,6 +91,10 @@ function PosterCardInner({ item, type, onSelect, rank, progress }) {
     cancelHide()
     if (hover === 'playing' || hover === 'pending') return
     setHover('pending')
+    // v1.9.2 — broadcast our claim on "active trailer slot". Other
+    // PosterCards listening on the bus will force-dismiss their
+    // popups so we never see two at once.
+    announceActiveTrailer(cardId)
     dwellRef.current = setTimeout(async () => {
       // Already fetched in this card's lifetime? Skip the network
       // roundtrip and just play.
@@ -96,6 +121,21 @@ function PosterCardInner({ item, type, onSelect, rank, progress }) {
     if (dwellRef.current) clearTimeout(dwellRef.current)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
   }, [])
+
+  // v1.9.2 — listen for OTHER cards taking the active-trailer slot.
+  // Any time another id announces itself, kill our own popup
+  // immediately (no grace timer — the user has already moved on).
+  useEffect(() => {
+    const onAnotherActive = (e) => {
+      if (!e?.detail?.cardId || e.detail.cardId === cardId) return
+      // Different card is taking over. Bail out of our state machine.
+      if (dwellRef.current) { clearTimeout(dwellRef.current); dwellRef.current = null }
+      if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null }
+      setHover('idle')
+    }
+    _activeTrailerEvents.addEventListener('active', onAnotherActive)
+    return () => _activeTrailerEvents.removeEventListener('active', onAnotherActive)
+  }, [cardId])
 
   // Compute the popup's fixed-coordinate position relative to the
   // poster button. Re-runs on scroll/resize so the popup follows the

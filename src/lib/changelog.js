@@ -13,6 +13,15 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.9.2',
+    date: '2026-05-17',
+    title: 'Hover trailers fixed (black-screen + double-popup)',
+    items: [
+      'Hover trailers were black screens because the v1.9.0 X-Frame-Options security header was blocking the renderer from embedding /trailer in an iframe. Carved out an exception for that single route — every other endpoint still refuses framing.',
+      'Multiple trailer popups could be visible at once when moving the cursor between posters. Added a module-level event bus so only ONE trailer popup is ever active; sibling cards force-dismiss when another claims the slot.',
+    ],
+  },
+  {
     version: '1.9.1',
     date: '2026-05-17',
     title: 'Updater back on GitHub Releases',
