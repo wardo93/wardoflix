@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.9.1',
+    date: '2026-05-17',
+    title: 'Updater back on GitHub Releases',
+    items: [
+      'Auto-updates are now pulled from github.com/wardo93/wardoflix/releases — same flow you knew before v1.7.0',
+      'The local-folder updater introduced in v1.7.0 is retired; the file is kept in electron/local-updater.js as a reference fallback',
+      'WF_UPDATE_LOCAL_PATH in .env is no longer read; the line is commented out',
+      'Differential updates via blockmap restored — typical update is ~1 MB instead of full 110 MB installer',
+    ],
+  },
+  {
     version: '1.9.0',
     date: '2026-05-17',
     title: '🔐 Security hardening pass — 10-expert audit',
