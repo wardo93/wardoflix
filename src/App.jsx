@@ -18,6 +18,7 @@ import { PosterCard } from './components/PosterCard.jsx'
 import { ContentRow } from './components/ContentRow.jsx'
 import { DetailModal } from './components/DetailModal.jsx'
 import { PlayerControls } from './components/PlayerControls.jsx'
+import { readLastSeenVersion, markVersionSeen, changelogEntriesNewerThan } from './lib/changelog.js'
 // Storage layer — profiles, history, resume, watched, sub offsets,
 // intro marks, sub style, audio language pref, volume.
 import {
@@ -601,6 +602,59 @@ function useUpdater() {
   return { status, check, install, hasApi }
 }
 
+// "What's New" modal (v1.8.1) — surfaces the changelog entries for
+// every version installed since the user last saw it. Fires on the
+// first launch after an upgrade; dismissing it marks the current
+// version as seen so it won't return until the NEXT upgrade.
+//
+// Renders nothing on a fresh install (readLastSeenVersion bootstraps
+// the localStorage value to the current version, so there are zero
+// entries newer than "now").
+function ChangelogModal({ entries, currentVersion, onDismiss }) {
+  // Esc dismisses.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onDismiss() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onDismiss])
+  if (!entries?.length) return null
+  return (
+    <div className="changelog-overlay" role="dialog" aria-modal="true" aria-labelledby="changelog-title">
+      <div className="changelog-card">
+        <header className="changelog-header">
+          <span className="changelog-eyebrow">What's new</span>
+          <h2 id="changelog-title" className="changelog-title">
+            Updated to v{currentVersion}
+          </h2>
+          {entries.length > 1 && (
+            <p className="changelog-sub">
+              {entries.length} updates since you last opened the app
+            </p>
+          )}
+        </header>
+        <div className="changelog-body">
+          {entries.map((e) => (
+            <section key={e.version} className="changelog-entry">
+              <div className="changelog-entry-head">
+                <span className="changelog-entry-version">v{e.version}</span>
+                {e.title && <span className="changelog-entry-title">{e.title}</span>}
+              </div>
+              <ul className="changelog-list">
+                {e.items.map((item, i) => <li key={i}>{item}</li>)}
+              </ul>
+            </section>
+          ))}
+        </div>
+        <footer className="changelog-footer">
+          <button className="changelog-dismiss" onClick={onDismiss} autoFocus>
+            Got it
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
 // Central update modal — appears when an update has finished
 // downloading. Replaces the previous "small badge in the corner"
 // flow with something the user actually notices. One button installs
@@ -1072,6 +1126,53 @@ function ForYou({ profile, onSelect, onPlayHistory }) {
 // bookmark button in the modal so the feature is discoverable.
 function LibraryView({ onSelect }) {
   const items = useLibrary()
+  const history = useHistory()
+  // v1.8.1 — derive a per-item watched status so cards can show a
+  // badge (Netflix-style "Resume" vs "Played" vs unstarted). Three
+  // states per item:
+  //   'watched'   → movies: in the watched map; TV: marked-watched
+  //                 OR final episode finished (clearResumePosition
+  //                 fires markWatched at -60s of the runtime).
+  //   'started'   → there's a resume position OR any history entry
+  //                 for the title (TV shows often have many history
+  //                 entries — one per episode).
+  //   null        → never played.
+  // For TV shows, since "watched the whole series" is non-trivial to
+  // detect (we'd need to iterate every episode against the watched
+  // map), we render any TV show with at least one history entry as
+  // 'started' — that matches user expectations (a partially-watched
+  // series stays "Continue" until it's manually cleared).
+  const statusOf = useMemo(() => {
+    const watchedMap = loadWatchedMap()
+    const resumeMap = loadResumeMap()
+    const historyByKey = new Map()
+    for (const h of history) {
+      const id = h.id ?? h.title
+      if (!id) continue
+      historyByKey.set(`${id}`, true)
+    }
+    return (entry) => {
+      const id = entry.id ?? entry.title
+      if (!id) return null
+      const isTv = (entry.type === 'tv' || entry.type === 'series')
+      // Movie path — single key
+      if (!isTv) {
+        if (watchedMap[`${id}|0|0`]) return 'watched'
+        if (resumeMap[`${id}|0|0`]) return 'started'
+        if (historyByKey.has(`${id}`)) return 'started'
+        return null
+      }
+      // TV path — scan keys for `id|...`
+      const prefix = `${id}|`
+      const anyResume = Object.keys(resumeMap).some((k) => k.startsWith(prefix))
+      if (anyResume) return 'started'
+      if (historyByKey.has(`${id}`)) return 'started'
+      const anyWatched = Object.keys(watchedMap).some((k) => k.startsWith(prefix))
+      if (anyWatched) return 'started'  // partial — never auto-promotes to 'watched' for TV
+      return null
+    }
+  }, [history])
+
   if (!items.length) {
     return (
       <div className="search-empty">
@@ -1081,28 +1182,44 @@ function LibraryView({ onSelect }) {
   }
   return (
     <div className="search-grid">
-      {items.map((entry) => (
-        <button
-          key={entry.id}
-          className="search-card"
-          onClick={() => onSelect({
-            id: entry.id,
-            title: entry.title,
-            poster: entry.poster,
-            backdrop: entry.backdrop,
-            type: entry.type,
-            rating: entry.rating || 0,
-            genre_ids: entry.genreIds || [],
-          })}
-        >
-          {entry.poster ? <img src={entry.poster} alt="" loading="lazy" />
-            : <div className="poster-placeholder">{(entry.title || '?')[0]}</div>}
-          <div className="search-card-info">
-            <span className="search-card-title">{entry.title}</span>
-            {entry.rating > 0 && <span className="search-card-rating">★ {entry.rating.toFixed(1)}</span>}
-          </div>
-        </button>
-      ))}
+      {items.map((entry) => {
+        const status = statusOf(entry)
+        return (
+          <button
+            key={entry.id}
+            className={`search-card library-card library-card--${status || 'fresh'}`}
+            onClick={() => onSelect({
+              id: entry.id,
+              title: entry.title,
+              poster: entry.poster,
+              backdrop: entry.backdrop,
+              type: entry.type,
+              rating: entry.rating || 0,
+              genre_ids: entry.genreIds || [],
+            })}
+          >
+            {entry.poster ? <img src={entry.poster} alt="" loading="lazy" />
+              : <div className="poster-placeholder">{(entry.title || '?')[0]}</div>}
+            {/* Watched/started badge — top-right corner of the
+                card. Hidden for never-played items so the badge isn't
+                visual noise for a fresh library. */}
+            {status && (
+              <span className={`library-badge library-badge--${status}`} aria-label={status === 'watched' ? 'Watched' : 'In progress'}>
+                {status === 'watched' ? (
+                  <>
+                    <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                    Watched
+                  </>
+                ) : 'In progress'}
+              </span>
+            )}
+            <div className="search-card-info">
+              <span className="search-card-title">{entry.title}</span>
+              {entry.rating > 0 && <span className="search-card-rating">★ {entry.rating.toFixed(1)}</span>}
+            </div>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -1909,6 +2026,18 @@ function App() {
   // knows to retry (or restart the app) instead of thinking the UI is frozen.
   const [appVersion, setAppVersion] = useState(null)
   const [serverHealthy, setServerHealthy] = useState(null) // null = unknown, true/false after first probe
+  // v1.8.1: "What's New" changelog modal. Holds the array of entries
+  // to show (empty until appVersion arrives). When appVersion lands,
+  // compare to last-seen-version stored in localStorage; if newer,
+  // populate this state with the new entries. Dismissing the modal
+  // saves the current version as last-seen.
+  const [changelogToShow, setChangelogToShow] = useState([])
+  useEffect(() => {
+    if (!appVersion) return
+    const lastSeen = readLastSeenVersion(appVersion)
+    const entries = changelogEntriesNewerThan(lastSeen)
+    if (entries.length > 0) setChangelogToShow(entries)
+  }, [appVersion])
 
   useEffect(() => {
     let cancelled = false
@@ -4053,6 +4182,19 @@ function App() {
       )}
 
       <UpdateAvailableModal />
+      {/* v1.8.1 "What's New" modal. Renders entries newer than the
+          user's last-seen version. Dismissing marks the current
+          version as seen so it doesn't return until the next upgrade. */}
+      {changelogToShow.length > 0 && appVersion && (
+        <ChangelogModal
+          entries={changelogToShow}
+          currentVersion={appVersion}
+          onDismiss={() => {
+            markVersionSeen(appVersion)
+            setChangelogToShow([])
+          }}
+        />
+      )}
       <ToastHost />
 
       {/* Next-episode countdown overlay (v1.7.6) — Netflix-style:

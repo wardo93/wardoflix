@@ -1533,6 +1533,158 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   margin-right: 2px;
 }
 
+/* ─── Changelog modal (v1.8.1) — "What's New" on upgrade ────────
+   Full-screen modal centered on a warm walnut card. Shows once per
+   new version installed; dismissing marks the version as seen. */
+.changelog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 240;          /* below still-watching (250), above topbar */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 4, 1, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: changelog-fade 0.25s ease;
+}
+@keyframes changelog-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.changelog-card {
+  width: min(560px, calc(100vw - 3rem));
+  max-height: min(640px, calc(100vh - 4rem));
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(135deg,
+    rgba(46, 32, 22, 0.98) 0%,
+    rgba(34, 24, 16, 0.98) 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 64px -12px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(232, 168, 56, 0.10);
+  animation: changelog-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes changelog-rise {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.changelog-header {
+  padding: 1.6rem 1.8rem 0.4rem;
+  flex-shrink: 0;
+}
+.changelog-eyebrow {
+  display: inline-block;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.6rem;
+}
+.changelog-title {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.changelog-sub {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+.changelog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.2rem 1.8rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.changelog-entry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+.changelog-entry-version {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 0.18rem 0.5rem;
+  background: rgba(232, 168, 56, 0.10);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.changelog-entry-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+.changelog-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  list-style: none;
+}
+.changelog-list li {
+  position: relative;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+  padding-left: 0.4rem;
+  margin-bottom: 0.45rem;
+}
+.changelog-list li::before {
+  content: '';
+  position: absolute;
+  left: -1rem;
+  top: 0.55rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.65;
+}
+.changelog-footer {
+  padding: 1rem 1.8rem 1.6rem;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.changelog-dismiss {
+  padding: 0.6rem 1.5rem;
+  font-family: var(--font);
+  font-size: 0.92rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: var(--bg-deep);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  box-shadow: 0 4px 12px -2px var(--accent-glow);
+}
+.changelog-dismiss:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -4px var(--accent-glow-strong);
+}
+.changelog-dismiss:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 3px;
+}
+
 .search-box input {
   width: 240px;
   padding: 0.55rem 1rem 0.55rem 2.4rem;
@@ -2142,6 +2294,57 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   font-size: 0.75rem;
   color: var(--green);
   font-weight: 600;
+}
+
+/* ─── Library watched/started badges (v1.8.1) ──────────────────
+   Top-right corner badge that flags whether a library item has
+   been played. Three states: 'watched' (green sage), 'started'
+   (amber accent), or no badge for fresh items. Uses currentColor
+   on the SVG so the badge inherits its colour from the variant. */
+.library-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem 0.22rem 0.45rem;
+  font-family: var(--font);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 2;
+  text-transform: uppercase;
+  /* Slight backdrop blur so the badge reads on bright poster art
+     without needing a heavy solid background. */
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.library-badge svg { display: block; }
+.library-badge--watched {
+  background: rgba(136, 176, 106, 0.92);  /* sage moss */
+  color: #0a0502;
+}
+.library-badge--started {
+  background: rgba(232, 168, 56, 0.94);   /* amber accent */
+  color: #0a0502;
+}
+/* Slightly dim the poster on fully-watched items so they recede
+   visually from the unwatched ones (Netflix grid behaviour). The
+   transition matches the card hover so toggling state feels smooth. */
+.library-card--watched img,
+.library-card--watched .poster-placeholder {
+  opacity: 0.72;
+  transition: opacity 0.25s var(--ease);
+}
+.library-card--watched:hover img,
+.library-card--watched:hover .poster-placeholder {
+  opacity: 1;
 }
 
 /* Infinite scroll sentinel */

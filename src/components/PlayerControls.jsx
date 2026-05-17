@@ -674,6 +674,11 @@ export function PlayerControls({
                         onClick={() => setSubStyle({ size: 130, position: 0, weight: 'normal', bg: 'box' })}
                         title="Caption Box — medium, with translucent black background"
                       >Caption</button>
+                      <button
+                        className="cc-timing-btn"
+                        onClick={() => setSubStyle({ size: 170, position: 0, weight: 'bold', bg: 'box' })}
+                        title="High Contrast — large bold text with solid box (best for low-vision)"
+                      >High Contrast</button>
                     </div>
                     <div className="cc-timing-row">
                       <span className="cc-timing-label">Sub size</span>
