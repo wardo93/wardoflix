@@ -22,6 +22,10 @@ export function toast(message, variant = 'info', opts = {}) {
     variant, // 'info' | 'success' | 'warning' | 'error'
     timeoutMs: opts.timeoutMs ?? (variant === 'error' ? 8000 : 4000),
     title: opts.title || null,
+    // v1.7.9: optional inline action button (e.g. "Undo" on a
+    // destructive operation). Shape: { label: string, onClick: fn }.
+    // Clicking the action fires onClick and dismisses the toast.
+    action: opts.action || null,
   }
   try { window.dispatchEvent(new CustomEvent(TOAST_EVENT, { detail })) } catch {}
   return detail.id
@@ -53,6 +57,12 @@ export function ToastHost() {
             {t.title && <div className="wf-toast-title">{t.title}</div>}
             <div className="wf-toast-msg">{t.message}</div>
           </div>
+          {t.action && typeof t.action.onClick === 'function' && (
+            <button
+              className="wf-toast-action"
+              onClick={() => { try { t.action.onClick() } catch {}; dismiss(t.id) }}
+            >{t.action.label || 'Action'}</button>
+          )}
           <button className="wf-toast-close" onClick={() => dismiss(t.id)} aria-label="Dismiss">×</button>
         </div>
       ))}

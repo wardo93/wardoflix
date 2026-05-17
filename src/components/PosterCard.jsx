@@ -12,7 +12,7 @@
 // ratio. Removed the per-session preview-audio toggle — silent is
 // the only mode now.
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { createPortal } from 'react-dom'
 
 // Preview popup geometry. 480×270 = 16:9 at a comfortable size for a
@@ -26,7 +26,14 @@ const HIDE_DELAY_MS = 220 // grace period when mouse leaves poster, so
                           // the user can travel into the popup card
                           // (and back) without losing the preview
 
-export function PosterCard({ item, type, onSelect, rank, progress }) {
+// v1.7.9: wrapped in React.memo so the card only re-renders when its
+// own props change. Without this, every parent state change in App.jsx
+// (volume, current time, mouse-parallax tick, etc.) ripples down
+// through ContentRow and re-renders every visible PosterCard — easily
+// 50+ unnecessary renders per second on a busy home screen. The card
+// already does its own hover-state internally so memoising at the
+// boundary is safe.
+function PosterCardInner({ item, type, onSelect, rank, progress }) {
   const [hover, setHover] = useState('idle') // idle | pending | playing
   const [trailerKey, setTrailerKey] = useState(null)
   const [popupRect, setPopupRect] = useState(null)
@@ -248,3 +255,21 @@ export function PosterCard({ item, type, onSelect, rank, progress }) {
     </>
   )
 }
+
+// memo with a shallow prop comparison. The custom comparator skips
+// `onSelect` (parent re-creates this on every render but the behaviour
+// is identical) and compares `item` by id rather than reference (the
+// ContentRow rebuilds the items array on each fetch but the entries
+// themselves are stable). Without these two tweaks, memo would
+// effectively no-op because the props look different every render
+// even though the rendered output is identical.
+export const PosterCard = memo(PosterCardInner, (prev, next) => {
+  if (prev.item?.id !== next.item?.id) return false
+  if (prev.type !== next.type) return false
+  if (prev.rank !== next.rank) return false
+  if (prev.progress !== next.progress) return false
+  // onSelect is recreated per parent render but always does the same
+  // thing — we don't compare it. The closure inside captures the
+  // latest item/type via the props we DO compare.
+  return true
+})

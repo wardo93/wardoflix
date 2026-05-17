@@ -4,6 +4,73 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 
+// Focus-trap hook (v1.7.9). When `active` is true, traps Tab/Shift+Tab
+// inside the element referenced by `containerRef` so keyboard users
+// can't leave a modal dialog without dismissing it. Also focuses the
+// first focusable child on mount so keyboard users have a clear
+// starting point. Restores focus to whatever had it before the modal
+// opened when `active` flips back to false.
+export function useFocusTrap(containerRef, active) {
+  const prevFocusRef = useRef(null)
+  useEffect(() => {
+    if (!active) return
+    const container = containerRef.current
+    if (!container) return
+
+    // Remember what had focus so we can return to it when the modal
+    // closes — important for keyboard navigation continuity.
+    prevFocusRef.current = document.activeElement
+
+    const focusables = () => Array.from(container.querySelectorAll(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])'
+    )).filter((el) => el.offsetParent !== null || el === container)
+
+    // Focus the first focusable child. If none exist, focus the
+    // container itself (requires tabindex="-1" set in JSX).
+    const initial = focusables()
+    if (initial.length > 0) {
+      try { initial[0].focus() } catch {}
+    } else {
+      try { container.focus() } catch {}
+    }
+
+    const onKey = (e) => {
+      if (e.key !== 'Tab') return
+      const list = focusables()
+      if (list.length === 0) {
+        e.preventDefault()
+        return
+      }
+      const first = list[0]
+      const last = list[list.length - 1]
+      if (e.shiftKey) {
+        // Shift+Tab from first → cycle to last
+        if (document.activeElement === first) {
+          e.preventDefault()
+          try { last.focus() } catch {}
+        }
+      } else {
+        // Tab from last → cycle to first
+        if (document.activeElement === last) {
+          e.preventDefault()
+          try { first.focus() } catch {}
+        }
+      }
+    }
+    container.addEventListener('keydown', onKey)
+    return () => {
+      container.removeEventListener('keydown', onKey)
+      // Restore focus on close. The previously-focused element may
+      // have been unmounted (rare but possible), so wrap in try.
+      try {
+        if (prevFocusRef.current && document.contains(prevFocusRef.current)) {
+          prevFocusRef.current.focus()
+        }
+      } catch {}
+    }
+  }, [active, containerRef])
+}
+
 // Debounce a value — typical "stop typing for X ms before search fires"
 // pattern. Returns the latest value, but only after `delay` ms of stillness.
 export function useDebounce(value, delay) {

@@ -3348,6 +3348,74 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 .player-empty p { margin: 0; font-size: 0.95rem; }
 
+/* v1.7.9 — rich empty state for the Stream tab idle screen. Replaces
+   the bare "paste a URL" line with a discoverable card. */
+.player-empty--rich {
+  gap: 1.2rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, #1a1108 0%, #0a0502 60%, #0a0502 100%);
+  border: 1px solid var(--border);
+}
+.player-empty-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.player-empty-body {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+  max-width: 520px;
+  text-align: center;
+}
+.player-empty-body strong { color: var(--text); font-weight: 600; }
+.player-empty-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
+}
+.player-empty-link:hover { color: var(--accent-hover); }
+.player-empty-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.5rem;
+  max-width: 520px;
+  width: 100%;
+}
+.player-empty-tip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.85rem;
+  background: rgba(232, 168, 56, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+.player-empty-tip kbd {
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 0.15rem 0.5rem;
+  background: rgba(8, 4, 1, 0.6);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
 /* ─── Spinner ─── */
 .spinner {
   width: 1rem;
@@ -4806,6 +4874,27 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   margin-top: -2px;
 }
 .wf-toast-close:hover { color: #fff; }
+/* v1.7.9 — inline action button on the toast. Warm amber accent so
+   it reads as the affordance, not noise. */
+.wf-toast-action {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.25rem 0.65rem;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.18s var(--ease);
+  white-space: nowrap;
+  margin-right: 0.4rem;
+}
+.wf-toast-action:hover {
+  background: var(--accent);
+  color: var(--bg-deep);
+  border-color: var(--accent);
+}
 @media (prefers-reduced-motion: reduce) {
   .wf-toast { animation: none; }
 }

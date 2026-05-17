@@ -10,7 +10,7 @@ import {
 } from './lib/util.js'
 import { upgradeStreamUrlForCodec, toAbsStreamUrl } from './lib/url.js'
 import {
-  useDebounce, useEdgeHoverScroll, useWheelHorizontalScroll, useHorizontalRowGestures,
+  useDebounce, useEdgeHoverScroll, useWheelHorizontalScroll, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
 import { ToastHost, ShortcutsOverlay, DebugOverlay, toast } from './components/Overlays.jsx'
 import { WardoFlixIntro, pickPiracyQuote } from './components/WardoFlixIntro.jsx'
@@ -82,9 +82,16 @@ function HeroBanner({ items, type, onSelect, onStream }) {
         </div>
       </div>
       {items.length > 1 && (
-        <div className="hero-dots">
+        <div className="hero-dots" role="tablist" aria-label="Featured titles">
           {items.slice(0, 5).map((_, i) => (
-            <button key={i} className={`hero-dot ${i === idx ? 'active' : ''}`} onClick={() => setIdx(i)} />
+            <button
+              key={i}
+              className={`hero-dot ${i === idx ? 'active' : ''}`}
+              onClick={() => setIdx(i)}
+              role="tab"
+              aria-selected={i === idx}
+              aria-label={`Featured title ${i + 1} of ${Math.min(5, items.length)}`}
+            />
           ))}
         </div>
       )}
@@ -193,11 +200,26 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
 
   const removeEntry = (e, entry) => {
     e.stopPropagation()
-    const list = loadHistory().filter((h) =>
+    if (e.preventDefault) e.preventDefault()
+    const prevList = loadHistory()
+    const list = prevList.filter((h) =>
       !(h.title === entry.title && h.season === entry.season && h.episode === entry.episode)
     )
     saveHistory(list)
     window.dispatchEvent(new Event('wardoflix:history-updated'))
+    // v1.7.9: friendly toast + Undo so right-click removals aren't
+    // a permanent surprise. The existing hover-× button calls this
+    // too, so both interaction paths benefit from the safety net.
+    toast(`Removed "${entry.title}${entry.season ? ` S${String(entry.season).padStart(2, '0')}E${String(entry.episode).padStart(2, '0')}` : ''}" from Continue Watching`, 'info', {
+      title: 'Hidden',
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          saveHistory(prevList)
+          window.dispatchEvent(new Event('wardoflix:history-updated'))
+        },
+      },
+    })
   }
 
   // Dedupe TV-show history: collapse consecutive entries of the same
@@ -239,7 +261,8 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
               key={`${entry.title}-${entry.season || ''}-${entry.episode || ''}-${i}`}
               className="row-poster history-poster"
               onClick={() => onPlay(entry)}
-              title={`${entry.title}${entry.season ? ` S${entry.season}` : ''}${entry.episode ? `E${entry.episode}` : ''}`}
+              onContextMenu={(e) => removeEntry(e, entry)}
+              title={`${entry.title}${entry.season ? ` S${entry.season}` : ''}${entry.episode ? `E${entry.episode}` : ''} · Right-click to hide`}
             >
               {entry.poster ? (
                 <img src={entry.poster} alt="" loading="lazy" />
@@ -3259,6 +3282,13 @@ function NextEpisodeCountdown({ info, onCancel, onConfirm }) {
 // prevents bandwidth burn when the user fell asleep.
 function StillWatchingPrompt({ info, onCancel, onConfirm }) {
   const { next, meta, consecutive } = info
+  const cardRef = useRef(null)
+  // v1.7.9: trap focus inside the modal so Tab can't escape to the
+  // dimmed page below. Keyboard users get a predictable cycle
+  // (Tab → I'm done → Continue → I'm done → …) and Esc/Enter to
+  // dismiss. Focus restores to wherever the user was before this
+  // modal opened.
+  useFocusTrap(cardRef, true)
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); onCancel() }
@@ -3269,9 +3299,9 @@ function StillWatchingPrompt({ info, onCancel, onConfirm }) {
   }, [onCancel, onConfirm])
   const epLabel = `S${String(next.season).padStart(2, '0')}E${String(next.episode).padStart(2, '0')}`
   return (
-    <div className="still-watching-overlay" role="dialog" aria-modal="true">
-      <div className="still-watching-card">
-        <h2 className="still-watching-title">Still watching?</h2>
+    <div className="still-watching-overlay" role="dialog" aria-modal="true" aria-labelledby="still-watching-title">
+      <div className="still-watching-card" ref={cardRef} tabIndex={-1}>
+        <h2 className="still-watching-title" id="still-watching-title">Still watching?</h2>
         <p className="still-watching-body">
           You've auto-played <strong>{consecutive}</strong> episodes in a row.
           {meta?.title && <> Up next is <strong>{meta.title} · {epLabel}</strong>.</>}
@@ -3287,6 +3317,22 @@ function StillWatchingPrompt({ info, onCancel, onConfirm }) {
       </div>
     </div>
   )
+}
+
+// ── Auto-pick single profile (v1.7.9) ────────────────────────────
+// When the user has exactly one profile, skip the "Who's watching?"
+// picker and just select it. Showing a chooser with one face on it
+// is performative UX — the answer is always "that one". As a
+// component (not a hook in App) so the effect runs early in the
+// commit phase, before <ProfileGate> would otherwise render.
+function AutoPickSingleProfile({ profiles, activeProfile }) {
+  useEffect(() => {
+    if (activeProfile) return
+    if (profiles.length === 1 && profiles[0]?.id) {
+      setActiveProfileId(profiles[0].id)
+    }
+  }, [profiles, activeProfile])
+  return null
 }
 
 // ── App ─────────────────────────────────────────────────────────
@@ -5176,8 +5222,15 @@ function App() {
       {/* Profile gate — renders after the startup intro fades. The
           render is gated on (!showStartupIntro) so the "Who's
           watching?" screen doesn't flash through behind the intro
-          (which is briefly translucent during its own fade-out). */}
-      {!showStartupIntro && !activeProfile && (
+          (which is briefly translucent during its own fade-out).
+          v1.7.9: if there's exactly ONE profile, skip the picker
+          entirely and auto-select. Showing a "Who's watching?"
+          screen with one face on it is performative — the answer
+          is always "that one". The picker still shows when there
+          are 2+ profiles (real choice) or 0 profiles (creation
+          flow). */}
+      <AutoPickSingleProfile profiles={profiles} activeProfile={activeProfile} />
+      {!showStartupIntro && !activeProfile && profiles.length !== 1 && (
         <ProfileGate
           profiles={profiles}
           onPick={(id) => setActiveProfileId(id)}
@@ -5475,9 +5528,35 @@ function App() {
                   <p>Connecting to peers...</p>
                 </div>
               ) : (
-                <div className="player-empty">
-                  <svg viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3"><rect x="2" y="4" width="20" height="14" rx="2"/><polygon points="10,8 16,11 10,14"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="18" x2="12" y2="21"/></svg>
-                  <p>Paste a URL or magnet link to start streaming</p>
+                /* v1.7.9 — replaced the bare "paste a URL" placeholder
+                   with a discoverable card that explains what the
+                   Stream tab actually does and offers shortcuts to
+                   the more common path (Browse). For users who land
+                   here by accident, "what is this?" used to require
+                   a guess. */
+                <div className="player-empty player-empty--rich">
+                  <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
+                    <rect x="2" y="4" width="20" height="14" rx="2" />
+                    <polygon points="10,8 16,11 10,14" fill="currentColor" opacity="0.6" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="18" x2="12" y2="21" />
+                  </svg>
+                  <h2 className="player-empty-title">Direct Stream</h2>
+                  <p className="player-empty-body">
+                    Paste a <strong>magnet link</strong> or <strong>direct video URL</strong> in
+                    the box above to stream it. Or skip this entirely
+                    and pick something from <button className="player-empty-link" onClick={() => setTab('browse')}>Browse</button>.
+                  </p>
+                  <div className="player-empty-tips">
+                    <div className="player-empty-tip">
+                      <kbd>magnet:?</kbd>
+                      <span>WebTorrent magnet — paste and press Enter</span>
+                    </div>
+                    <div className="player-empty-tip">
+                      <kbd>https://</kbd>
+                      <span>Direct .mp4 / .mkv / .m3u8 URL</span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -6,11 +6,14 @@
 //
 // Extracted from App.jsx in v1.7.0.
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { PosterCard } from './PosterCard.jsx'
 import { useEdgeHoverScroll, useHorizontalRowGestures } from '../lib/hooks.js'
 
-export function ContentRow({ title, url, type, onSelect, showRanking = false }) {
+// v1.7.9: wrapped in React.memo at the bottom of this file. Same
+// rationale as PosterCard — the home page has 12+ rows on screen
+// and each row was re-rendering on every parent state change.
+function ContentRowInner({ title, url, type, onSelect, showRanking = false }) {
   const [items, setItems] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [attempt, setAttempt] = useState(0) // bump to force refetch (currently unused but cheap to keep)
@@ -108,3 +111,15 @@ export function ContentRow({ title, url, type, onSelect, showRanking = false }) 
     </div>
   )
 }
+
+// Custom comparator — only re-render if the URL, title, type, or
+// ranking flag changed. onSelect is recreated per parent render but
+// is structurally equivalent (always (item) => setDetailItem(item)),
+// so we don't compare it.
+export const ContentRow = memo(ContentRowInner, (prev, next) => {
+  if (prev.url !== next.url) return false
+  if (prev.title !== next.title) return false
+  if (prev.type !== next.type) return false
+  if (prev.showRanking !== next.showRanking) return false
+  return true
+})
