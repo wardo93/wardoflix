@@ -224,6 +224,10 @@ export function loadHistoryForProfile(profileId) {
 
 export function addToHistory(entry, profileId) {
   if (!entry || !entry.magnet) return
+  // v1.9.0 — privacy mode suspends history additions. Active items
+  // already in the list stay; new plays just don't get recorded.
+  // Resume positions are also suppressed (see saveResumePosition).
+  if (loadPrivacyMode()) return
   const list = profileId ? loadHistoryForProfile(profileId) : loadHistory()
   // Dedupe: same title+season+episode replaces earlier entry
   const key = `${entry.title || ''}|${entry.season || ''}|${entry.episode || ''}`
@@ -290,6 +294,10 @@ export function loadResumeMap() {
 export function saveResumePosition(meta, time, duration) {
   const key = resumeKey(meta)
   if (!key || !isFinite(time) || time < 30) return
+  // v1.9.0 — privacy mode also suppresses resume tracking. Without
+  // this, "private viewing" would still leave a Continue Watching
+  // crumb trail.
+  if (loadPrivacyMode()) return
   // v1.7.4 fix: do NOT clear-when-near-end here. The duration() the
   // player reports for live-streaming /remux URLs is the duration of
   // the BUFFERED portion, not the full video — so as the user
@@ -658,6 +666,46 @@ export function isWatched(meta) {
   const key = resumeKey(meta)
   if (!key) return false
   return !!loadWatchedMap()[key]
+}
+
+// ── Privacy mode (v1.9.0) ──────────────────────────────────────
+// When ON, the app suspends every "what's the user doing" signal:
+//   - Continue Watching stops recording history additions
+//   - Resume positions stop being saved
+//   - Watched-flag writes are suppressed
+//   - Discord Rich Presence sends `clearActivity` instead of titles
+//   - Telemetry pings are skipped (server already honours this via
+//     the access.json telemetry.disabled flag, but we belt-and-
+//     brace it client-side too)
+// The flag is per-profile so a privacy-conscious profile can co-exist
+// with a regular one on the same machine. Default OFF — adding a
+// big toggle to the topbar is the discoverability story.
+export const PRIVACY_MODE_KEY = 'wardoflix:privacy-mode'
+export function privacyModeKeyForActive() {
+  const id = getActiveProfileId()
+  return id ? `${PRIVACY_MODE_KEY}:${id}` : PRIVACY_MODE_KEY
+}
+export function loadPrivacyMode() {
+  try { return localStorage.getItem(privacyModeKeyForActive()) === '1' } catch { return false }
+}
+export function savePrivacyMode(on) {
+  try { localStorage.setItem(privacyModeKeyForActive(), on ? '1' : '0') } catch {}
+  // Notify subscribers (e.g. the App's privacy-mode useState) so they
+  // re-read without a full re-mount.
+  try { window.dispatchEvent(new Event('wardoflix:privacy-mode-changed')) } catch {}
+}
+export function usePrivacyMode() {
+  const [v, setV] = useState(loadPrivacyMode)
+  useEffect(() => {
+    const onChange = () => setV(loadPrivacyMode())
+    window.addEventListener('wardoflix:privacy-mode-changed', onChange)
+    window.addEventListener('wardoflix:profile-changed', onChange)
+    return () => {
+      window.removeEventListener('wardoflix:privacy-mode-changed', onChange)
+      window.removeEventListener('wardoflix:profile-changed', onChange)
+    }
+  }, [])
+  return v
 }
 
 // ── Volume + mute persistence (localStorage) ────────────────────

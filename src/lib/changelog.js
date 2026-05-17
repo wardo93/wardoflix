@@ -13,6 +13,25 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.9.0',
+    date: '2026-05-17',
+    title: '🔐 Security hardening pass — 10-expert audit',
+    items: [
+      'Express API locked to localhost for control endpoints — LAN can only reach the data plane (/stream, /remux for TV cast)',
+      'CORS allow-list replaces wildcard — only our own renderer can hit /api/*',
+      'Strict Content Security Policy on the renderer — blocks any script/connect that isn\'t to TMDB/OpenSubs/Torrentio',
+      'Subtitle proxy SSRF-hardened: 1 MB size cap, 8 s timeout, URL length cap',
+      'Magnet links schema-validated before reaching WebTorrent',
+      'Body-size caps + per-IP rate limit (200 req/min) on the API',
+      'Log scrubber strips magnet hashes + public IPs from disk logs',
+      'Discord Rich Presence payloads sanitized (control-char strip + length cap)',
+      'Per-IP request IDs on the API for forensic correlation',
+      'Log retention reduced 50 MB → 6 MB',
+      'Electron permission handler tightened (mic/camera dropped, sync-permission probes blocked)',
+      'NEW: 🔒 Privacy Mode toggle in the topbar — suspends history, resume, and Discord RPC for the session',
+    ],
+  },
+  {
     version: '1.8.1',
     date: '2026-05-17',
     title: 'Library badges, accessibility, and this modal',

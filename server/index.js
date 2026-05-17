@@ -279,8 +279,152 @@ function touchTorrent(infoHash) {
 
 // ── Express setup ───────────────────────────────────────────────
 const app = express()
-app.use(cors())
-app.use(express.json())
+
+// ─── v1.9.0 Security middleware (P1 — lockdown) ───────────────
+//
+// The server bind has to stay 0.0.0.0 because Chromecast/DLNA TVs
+// need to reach the /stream and /remux endpoints by LAN IP. But
+// that means every device on your home network can ALSO hit
+// /api/stream, /api/torrents, /api/dlna/play, etc. — endpoints
+// that let a caller initiate torrents, enumerate the local
+// filesystem via torrent file lists, and broadcast media to
+// any DLNA renderer on the LAN.
+//
+// Solution: split the surface. The "control plane" (POST routes,
+// catalog GETs, anything that mutates) is locked to localhost
+// only. The "data plane" (/stream, /remux for the TV to pull
+// bytes, and /api/health for trivial liveness) stays LAN-open.
+function isLocalRequest(req) {
+  const ip = req.ip || req.connection?.remoteAddress || ''
+  // Express's req.ip strips IPv6 prefix when trustProxy is off.
+  // Accept the canonical localhost forms: IPv4, IPv6 ::1, and
+  // IPv4-mapped IPv6 ::ffff:127.0.0.1.
+  if (ip === '127.0.0.1' || ip === '::1') return true
+  if (ip.startsWith('::ffff:127.')) return true
+  if (ip.startsWith('::ffff:0:')) return true
+  return false
+}
+
+// LAN-open routes that any LAN device may reach. Everything else
+// passes through the requireLocal middleware below.
+const LAN_OPEN_PREFIXES = ['/stream', '/remux', '/api/health', '/api/version', '/trailer']
+
+function requireLocal(req, res, next) {
+  const url = req.url || ''
+  if (LAN_OPEN_PREFIXES.some((p) => url === p || url.startsWith(p + '/') || url.startsWith(p + '?'))) {
+    return next()
+  }
+  if (isLocalRequest(req)) return next()
+  // Don't leak whether the route exists — silently 404 to a LAN
+  // probe so an attacker can't enumerate our API by status code.
+  return res.status(404).end()
+}
+app.use(requireLocal)
+
+// CORS only allows our own origins. Renderer runs from file://
+// (Origin: 'null') in packaged builds, http://localhost:5173 in
+// dev, and http://localhost:3000 internally. No reason to allow
+// anything else. The DLNA TVs that pull /stream + /remux don't
+// send Origin headers so they bypass CORS entirely (which is
+// what we want).
+const ALLOWED_ORIGINS = new Set(['null', 'http://localhost:5173', 'http://localhost:3000'])
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true)            // same-origin / non-browser
+    if (ALLOWED_ORIGINS.has(origin)) return cb(null, true)
+    // Reject silently; don't echo the disallowed origin back.
+    return cb(null, false)
+  },
+  credentials: false,
+}))
+
+// Security headers (lightweight in-house version of Helmet — keeps
+// our deps lean). Applied to every response.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()')
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site')
+  next()
+})
+
+// In-memory per-IP rate limit. 200 requests per 60-second window
+// is generous for our localhost-only client (each browse page fires
+// ~12 catalog calls), but tight enough to catch a runaway loop or
+// a malicious local process spamming us. Window is rolling, not
+// fixed — we keep the timestamp of each request and drop those
+// past the window before checking the count.
+const RATE_LIMIT_WINDOW_MS = 60_000
+const RATE_LIMIT_MAX = 200
+const _rateBuckets = new Map() // ip -> number[] of request timestamps
+function rateLimitMiddleware(req, res, next) {
+  // Skip the data-plane — TVs may pull /stream in many small range
+  // requests and we don't want to throttle them.
+  const url = req.url || ''
+  if (url.startsWith('/stream') || url.startsWith('/remux')) return next()
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown'
+  const now = Date.now()
+  const cutoff = now - RATE_LIMIT_WINDOW_MS
+  let bucket = _rateBuckets.get(ip)
+  if (!bucket) { bucket = []; _rateBuckets.set(ip, bucket) }
+  // Drop expired entries (simple linear scan — buckets are small).
+  while (bucket.length && bucket[0] < cutoff) bucket.shift()
+  if (bucket.length >= RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Too many requests' })
+  }
+  bucket.push(now)
+  next()
+}
+app.use(rateLimitMiddleware)
+
+// Periodically prune empty buckets so the map doesn't grow forever
+// when the same client cycles through dynamic ports.
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS
+  for (const [ip, bucket] of _rateBuckets) {
+    while (bucket.length && bucket[0] < cutoff) bucket.shift()
+    if (bucket.length === 0) _rateBuckets.delete(ip)
+  }
+}, RATE_LIMIT_WINDOW_MS).unref?.()
+
+// JSON body cap — 16kb is plenty for any endpoint we have (magnet
+// links cap around 2-3kb, debug-log is 8kb, DLNA play accepts a
+// few hundred bytes). Caps protect against a hostile local process
+// trying to OOM us with a giant POST body.
+app.use(express.json({ limit: '16kb' }))
+
+// v1.9.0 — request ID + structured log line per request. The request
+// ID is short (6 random base36 chars) so it doesn't bloat logs but
+// is unique-enough to correlate a /api/stream → /remux → /api/tracks
+// chain inside the log without ambiguity. Attached to req for
+// downstream handlers; logged at request-finish with status + ms.
+let _reqIdSeq = 0
+app.use((req, res, next) => {
+  // Combine an incrementing counter with random bits for uniqueness
+  // even across server-fork respawns (counter resets to 0, randoms
+  // don't collide). Padded to 6 chars.
+  const id = (_reqIdSeq++ % 0x10000).toString(36).padStart(3, '0') +
+    Math.random().toString(36).slice(2, 5)
+  req.reqId = id
+  res.setHeader('X-Request-Id', id)
+  const started = Date.now()
+  // Skip noisy hot endpoints (SSE keeps a connection open for the
+  // whole stream so logging the close-time is misleading). /stream
+  // and /remux are byte pipes we already log entry-side.
+  const u = req.url || ''
+  if (u.startsWith('/api/stream/progress') || u.startsWith('/stream') || u.startsWith('/remux')) {
+    return next()
+  }
+  res.on('finish', () => {
+    const ms = Date.now() - started
+    // Only log slow or non-2xx — keeps the log signal-to-noise high.
+    if (ms > 800 || res.statusCode >= 400) {
+      console.log(`[${id}] ${req.method} ${req.url} → ${res.statusCode} ${ms}ms`)
+    }
+  })
+  next()
+})
 // Gzip every response except the video pipes. /stream and /remux are
 // either already compressed bitstreams (re-gzipping just burns CPU) or
 // need byte-accurate pass-through, so we short-circuit the filter there.
@@ -1796,26 +1940,82 @@ function isSubtitleHostAllowed(host) {
   )
 }
 
+// v1.9.0 — SSRF defence-in-depth.
+//   - Hard size cap: subtitle files are ~30-200KB typically; 1MB
+//     is generous and prevents an allow-listed host from being
+//     coerced into proxying a giant payload through us.
+//   - Fetch timeout: 8s; opensubtitles mirrors are sometimes slow
+//     but not minutes-slow.
+//   - URL length cap: 2KB. Real OpenSubtitles URLs are <512B.
+const SUBTITLE_MAX_BYTES = 1024 * 1024 // 1 MB
+const SUBTITLE_FETCH_TIMEOUT_MS = 8000
+
 app.get('/api/subtitles/proxy', async (req, res) => {
   const { url, offset } = req.query
-  if (!url || !url.startsWith('https://')) return res.status(400).json({ error: 'Invalid URL' })
+  if (!url || typeof url !== 'string' || url.length > 2048) {
+    return res.status(400).json({ error: 'Invalid URL' })
+  }
+  if (!url.startsWith('https://')) return res.status(400).json({ error: 'Invalid URL' })
   let parsed
   try { parsed = new URL(url) } catch { return res.status(400).json({ error: 'Invalid URL' }) }
   if (!isSubtitleHostAllowed(parsed.host)) {
     console.warn(`[subs/proxy] refused host=${parsed.host}`)
     return res.status(403).json({ error: 'Host not allowed' })
   }
+  // Abort-controller-based timeout so the request can't hang the
+  // server. Combined with the size check below, a hostile mirror
+  // can't keep us connected indefinitely.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), SUBTITLE_FETCH_TIMEOUT_MS)
   try {
-    const r = await fetch(url, FETCH_OPTS)
+    const r = await fetch(url, { ...FETCH_OPTS, signal: ctrl.signal })
     if (!r.ok) return res.status(502).json({ error: 'Fetch failed' })
-    const text = await r.text()
+    // Reject upstream content-length over the cap WITHOUT reading
+    // the body — for hosts that advertise honestly, this stops
+    // bandwidth waste before it starts.
+    const advertised = parseInt(r.headers.get('content-length') || '0', 10)
+    if (advertised > SUBTITLE_MAX_BYTES) {
+      return res.status(413).json({ error: 'Subtitle file too large' })
+    }
+    // Streaming read with a running size counter — defends against
+    // hosts that lie about content-length.
+    const chunks = []
+    let total = 0
+    const reader = r.body?.getReader?.()
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.length
+        if (total > SUBTITLE_MAX_BYTES) {
+          try { reader.cancel() } catch {}
+          return res.status(413).json({ error: 'Subtitle file too large' })
+        }
+        chunks.push(value)
+      }
+    } else {
+      // Fallback for runtimes without stream readers — best effort.
+      const buf = Buffer.from(await r.arrayBuffer())
+      if (buf.length > SUBTITLE_MAX_BYTES) {
+        return res.status(413).json({ error: 'Subtitle file too large' })
+      }
+      chunks.push(buf)
+    }
+    const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8')
     let vtt = text.trimStart().startsWith('WEBVTT') ? text : srtToVtt(text)
     const offsetSec = parseFloat(offset)
     if (offsetSec) vtt = shiftVttTimestamps(vtt, offsetSec)
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8')
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.send(vtt)
-  } catch (err) { res.status(500).json({ error: err.message }) }
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      return res.status(504).json({ error: 'Subtitle fetch timed out' })
+    }
+    res.status(500).json({ error: err.message })
+  } finally {
+    clearTimeout(timer)
+  }
 })
 
 // ── Video file helpers ──────────────────────────────────────────
@@ -1947,9 +2147,26 @@ function getStreamFromTorrent(t, opts = {}) {
 }
 
 // ── Stream endpoint ─────────────────────────────────────────────
+// v1.9.0 — Schema-validated magnet input.
+// A valid BitTorrent magnet looks like:
+//   magnet:?xt=urn:btih:<40-hex-OR-32-base32>&dn=...&tr=...&...
+// We enforce the prefix + a parseable info-hash, plus a hard length
+// cap so a malicious caller can't OOM us with a 100MB "magnet".
+// Length 8KB is way more than any real magnet needs (typical: ~500B
+// to ~3KB with our tracker list appended).
+function isWellFormedMagnet(raw) {
+  if (typeof raw !== 'string') return false
+  const m = raw.trim()
+  if (m.length < 60 || m.length > 8192) return false
+  if (!m.toLowerCase().startsWith('magnet:?')) return false
+  // Info-hash is mandatory and must be hex(40) or base32(32).
+  const hashMatch = m.match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})\b/)
+  return Boolean(hashMatch)
+}
+
 app.post('/api/stream', (req, res) => {
   let { magnet, fileIdx, season, episode } = req.body || {}
-  if (!magnet || !String(magnet).trim().toLowerCase().startsWith('magnet:')) {
+  if (!isWellFormedMagnet(magnet)) {
     return res.status(400).json({ error: 'Invalid magnet link' })
   }
   // Drop the touchTorrent timer immediately so a failed-to-connect
@@ -2418,9 +2635,17 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // failure, socket-ended-mid-response) can't hang the request forever.
   try {
   const hash = req.params.infoHash?.toLowerCase()
-  const reqTag = `[/remux ${hash?.slice(0, 8)}]`
+  // v1.9.0: strict 40-hex hash validation. The torrent lookup
+  // would 404 on a malformed hash anyway, but rejecting outside
+  // the find() lets us avoid burning cycles on the linear scan
+  // and stops weird probe URLs from showing up in logs as if
+  // they were real torrent requests.
+  if (!hash || !/^[a-f0-9]{40}$/.test(hash)) {
+    return res.status(400).json({ error: 'Invalid infoHash' })
+  }
+  const reqTag = `[/remux ${hash.slice(0, 8)}]`
   console.log(`${reqTag} hit range=${req.headers.range || '-'} q=${new URLSearchParams(req.query).toString() || '-'}`)
-  const torrent = hash && client.torrents.find((t) => String(t.infoHash || '').toLowerCase() === hash)
+  const torrent = client.torrents.find((t) => String(t.infoHash || '').toLowerCase() === hash)
   if (!torrent) { console.log(`${reqTag} 404 torrent not found`); return res.status(404).json({ error: 'Torrent not found' }) }
 
   const videoFile = pickBestVideoFile(torrent.files)
@@ -2899,7 +3124,44 @@ function guessMimeForDlna(url) {
 
 app.post('/api/dlna/play', (req, res) => {
   const { id, url, title, type } = req.body || {}
-  if (!id || !url) return res.status(400).json({ error: 'Missing id or url' })
+  // v1.9.0 — strict shape validation. id is an internal device id
+  // (UUID-ish string); url MUST be one of our own /stream or
+  // /remux endpoints (we don't trust the renderer to point a TV at
+  // arbitrary URLs); title is text-only with a cap. Type is one of
+  // a small whitelist of MIME strings or omitted.
+  if (typeof id !== 'string' || id.length < 8 || id.length > 256) {
+    return res.status(400).json({ error: 'Invalid device id' })
+  }
+  if (typeof url !== 'string' || url.length > 2048) {
+    return res.status(400).json({ error: 'Invalid url' })
+  }
+  // Allow only URLs that point at our own server, on either localhost
+  // or this machine's LAN IP. Prevents using us as a DLNA-cast SSRF
+  // for arbitrary URLs.
+  const lan = getLanIp() || ''
+  const allowedOrigins = [
+    `http://localhost:${API_PORT}/`,
+    `http://127.0.0.1:${API_PORT}/`,
+    lan ? `http://${lan}:${API_PORT}/` : null,
+  ].filter(Boolean)
+  if (!allowedOrigins.some((p) => url.startsWith(p))) {
+    return res.status(400).json({ error: 'url must point at this WardoFlix server' })
+  }
+  // Path must be /stream or /remux — block /api/* relay attempts.
+  try {
+    const u = new URL(url)
+    if (!u.pathname.startsWith('/stream/') && !u.pathname.startsWith('/remux/')) {
+      return res.status(400).json({ error: 'url must be a /stream or /remux path' })
+    }
+  } catch {
+    return res.status(400).json({ error: 'Invalid url' })
+  }
+  if (title != null && (typeof title !== 'string' || title.length > 256)) {
+    return res.status(400).json({ error: 'Invalid title' })
+  }
+  if (type != null && (typeof type !== 'string' || type.length > 64)) {
+    return res.status(400).json({ error: 'Invalid type' })
+  }
   const player = dlnaPlayers.get(id)
   if (!player) return res.status(404).json({ error: 'Device not found — try refresh' })
   const mime = type || guessMimeForDlna(url)

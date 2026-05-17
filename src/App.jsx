@@ -36,6 +36,7 @@ import {
   readPlaybackRate, savePlaybackRate,
   loadWatchedMap, markWatched, unmarkWatched, isWatched,
   loadVolumePref, saveVolumePref,
+  loadPrivacyMode, savePrivacyMode, usePrivacyMode,
 } from './lib/storage.js'
 
 
@@ -715,6 +716,46 @@ function UpdateAvailableModal() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Privacy Mode toggle (v1.9.0) ───────────────────────────────
+// Topbar button that flips the per-profile privacy flag. When ON:
+//   - new history entries are dropped (Continue Watching freezes)
+//   - resume positions don't save (every replay restarts at 0)
+//   - Discord Rich Presence sends clearActivity instead of titles
+//   - watched flag writes are suppressed
+// Visual: open-eye icon (off) → crossed-eye icon (on). Tooltip
+// explains the effect so it isn't a mystery button.
+function PrivacyModeToggle() {
+  const on = usePrivacyMode()
+  return (
+    <button
+      className={`privacy-toggle ${on ? 'is-on' : ''}`}
+      onClick={() => savePrivacyMode(!on)}
+      title={on
+        ? 'Privacy Mode is ON — history, resume, and Rich Presence suspended. Click to turn off.'
+        : 'Privacy Mode is OFF — click to suspend history, resume, and Discord Rich Presence for this session.'}
+      aria-label={on ? 'Disable Privacy Mode' : 'Enable Privacy Mode'}
+      aria-pressed={on}
+    >
+      {on ? (
+        // crossed-out eye
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+          <path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+          <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+          <line x1="1" y1="1" x2="23" y2="23" />
+        </svg>
+      ) : (
+        // open eye
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      )}
+      {on && <span className="privacy-toggle-label">Private</span>}
+    </button>
   )
 }
 
@@ -2190,9 +2231,13 @@ function App() {
   // playingMetadata back to null. Pure fire-and-forget; the bridge
   // gracefully no-ops when Discord isn't running or no application id
   // is configured.
+  // v1.9.0 — also suppressed while Privacy Mode is on. Discord
+  // Rich Presence broadcasts "Watching X" to anyone friended on
+  // Discord; private viewing should NOT leak that.
+  const privacyOn = usePrivacyMode()
   useEffect(() => {
     try {
-      if (playingMetadata && source) {
+      if (playingMetadata && source && !privacyOn) {
         window.wardoflixDiscord?.setActivity?.({
           title: playingMetadata.title || '',
           season: playingMetadata.season || null,
@@ -2203,7 +2248,7 @@ function App() {
         window.wardoflixDiscord?.clearActivity?.()
       }
     } catch {}
-  }, [playingMetadata, source])
+  }, [playingMetadata, source, privacyOn])
 
   useEffect(() => {
     return () => {
@@ -3877,6 +3922,12 @@ function App() {
             v{appVersion}
           </div>
         )}
+        {/* v1.9.0 — Privacy Mode toggle. When ON: history, resume
+            positions, Discord RPC, and telemetry are all suspended.
+            Click toggles; the eye icon flips between open (off) and
+            crossed-out (on). Per-profile so a privacy-conscious
+            profile co-exists with a regular one. */}
+        <PrivacyModeToggle />
         {/* Auto-updater indicator. Renders null outside Electron (browser
             preview) because window.wardoflixUpdater is only exposed by the
             preload script in the packaged app. */}

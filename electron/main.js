@@ -29,8 +29,15 @@ const isDev = !app.isPackaged
 const userData = app.getPath('userData')
 try { fs.mkdirSync(userData, { recursive: true }) } catch {}
 const LOG_PATH = path.join(userData, 'wardoflix.log')
-const LOG_MAX_BYTES = 10 * 1024 * 1024 // 10MB — anything bigger and editors choke
-const LOG_KEEP = 5                     // rotated history count (.1 … .5)
+// v1.9.0 — reduced from 10MB×5 to 2MB×3. Forensic hygiene: less
+// long-tail history of stream URLs + magnets sitting around on
+// disk. 2MB still holds ~10k log lines, which is plenty for
+// triaging a single session's bug report; rotating 3 keeps a few
+// sessions back. Combined with the v1.9.0 log scrubber (which
+// redacts magnets + public IPs), the disk footprint of PII is
+// roughly an order of magnitude smaller.
+const LOG_MAX_BYTES = 2 * 1024 * 1024 // 2MB
+const LOG_KEEP = 3                    // .1 .. .3
 
 // Rotate wardoflix.log → wardoflix.log.1 → …log.5 (oldest). Runs once at
 // startup. Without this the log grows unbounded — a single crash loop
@@ -71,8 +78,36 @@ if (!logStream) {
   }
 }
 
+// v1.9.0 — Log scrubber. Strips identifiers that don't belong in
+// long-lived logs (magnet hashes, public IPs, sometimes user paths).
+// Forensic discipline: when the user shares a log file for triage,
+// we shouldn't be handing over the URLs of every torrent they
+// streamed. Hashes still get the first 8 chars so we can correlate
+// events for the SAME torrent within a session.
+const SCRUB_RULES = [
+  // BitTorrent info-hashes (40-hex). Keep first 8 chars + "…" for
+  // session correlation; redact the rest.
+  [/\b([a-fA-F0-9]{8})[a-fA-F0-9]{32}\b/g, '$1…[REDACTED-HASH]'],
+  // Full magnet URIs — collapse to a short stub.
+  [/magnet:\?[^\s)'"]+/g, 'magnet:?[REDACTED]'],
+  // Public IPv4 addresses (peer IPs from WebTorrent stack traces /
+  // tracker chatter). Skip LAN ranges since those are useful for
+  // diagnostics and not sensitive. The pattern is intentionally
+  // conservative — it only matches 4-octet dotted form anchored on
+  // word boundaries, so version strings like "1.2.3.4" only get
+  // hit if all four octets parse as <=255 in a row.
+  [/\b(?!10\.)(?!192\.168\.)(?!172\.(?:1[6-9]|2\d|3[01])\.)(?!127\.)(?!169\.254\.)(?!0\.)((?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.(?:25[0-5]|2[0-4]\d|[01]?\d?\d))\b/g, '[REDACTED-IP]'],
+]
+function scrubLog(s) {
+  let out = String(s)
+  for (const [re, sub] of SCRUB_RULES) out = out.replace(re, sub)
+  return out
+}
+
 function log(...args) {
-  const line = `[${new Date().toISOString()}] ${args.join(' ')}`
+  const raw = args.join(' ')
+  const safe = scrubLog(raw)
+  const line = `[${new Date().toISOString()}] ${safe}`
   try { console.log(line) } catch {}
   try { logStream?.write(line + '\n') } catch {}
 }
@@ -309,6 +344,16 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // v1.9.0 — defense-in-depth Electron hardening. The first
+      // two we've always had; the rest tighten the renderer's
+      // attack surface in case something slips past the CSP.
+      sandbox: false,           // can't enable without rewriting Node-touching IPC; preload uses require()
+      webSecurity: true,        // same-origin policy enforced
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      navigateOnDragDrop: false,    // prevent drag-drop of a URL from navigating the BrowserWindow
+      spellcheck: false,
+      enableBlinkFeatures: '',      // explicit empty — no extras opted in
       preload: path.join(__dirname, 'preload.cjs'),
     },
   }
@@ -343,18 +388,31 @@ function createWindow() {
     //   - media: future microphone/camera if we ever add a "send
     //     reaction" feature; cheap to allow now since we're a single-
     //     user trust-our-own-app model.
+    // v1.9.0 — dropped 'media' from the allowlist. We don't actually
+    // request the mic/camera anywhere (the comment said "future
+    // reactions feature" — that didn't happen). Granting it pre-emptively
+    // means a hostile script that slipped past CSP could enumerate
+    // devices silently. If the reaction feature ships later, add it
+    // back deliberately.
     const allowed = new Set([
       'geolocation',
       'fullscreen',
       'pointerLock',
       'clipboard-read',
       'clipboard-sanitized-write',
-      'media',
     ])
     if (allowed.has(permission)) return callback(true)
     // Deny everything we haven't explicitly listed (notifications,
-    // midi, USB, serial, HID — none of which we use).
+    // midi, USB, serial, HID, media — none of which we use).
     callback(false)
+  })
+  // v1.9.0 — also block setPermissionCheckHandler-level grants for
+  // anything not on the allowlist. The request handler above runs
+  // for prompt-style requests; the check handler runs for the
+  // synchronous "does this site have permission" probe a script can
+  // run before deciding whether to bother prompting.
+  mainWindow.webContents.session.setPermissionCheckHandler((_wc, permission) => {
+    return new Set(['fullscreen', 'pointerLock']).has(permission)
   })
 
   // Restore maximize / fullscreen if it was set last time. Note we do this

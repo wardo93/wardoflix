@@ -118,20 +118,36 @@ export function initDiscordPresence({ policy, log = () => {} }) {
 //   - Details: title (e.g. "The Boys")
 //   - State:   episode tag if TV, otherwise "Watching" / movie year
 //   - Start:   timestamp now → Discord shows "elapsed XX:XX"
+// v1.9.0 — sanitization. The renderer hands us a `meta` object via
+// IPC; we never trust unbounded text reaching Discord (or anyone
+// watching the user's profile). Strip control characters, cap
+// length, sanitize season/episode to integers, and validate the
+// final payload against Discord's documented per-field limits
+// (128 chars). A malformed meta is silently dropped instead of
+// throwing — Rich Presence is best-effort, not load-bearing.
+function sanitizeMeta(meta) {
+  if (!meta || typeof meta !== 'object') return null
+  const stripControl = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '').trim()
+  const title = stripControl(meta.title || 'Untitled').slice(0, 96) || 'Untitled'
+  const season = Number.isFinite(parseInt(meta.season)) ? parseInt(meta.season) : null
+  const episode = Number.isFinite(parseInt(meta.episode)) ? parseInt(meta.episode) : null
+  return { title, season, episode }
+}
+
 export function setStreamingActivity(meta, log = () => {}) {
   if (!RPC || !client) return // not initialised yet
-  if (!meta) {
+  const clean = sanitizeMeta(meta)
+  if (!clean) {
     pendingActivity = null
     setActivitySafely(null)
     return
   }
-  const title = String(meta.title || 'Untitled').slice(0, 128)
-  const isTv = !!(meta.season && meta.episode)
+  const isTv = clean.season != null && clean.episode != null
   const state = isTv
-    ? `S${String(meta.season).padStart(2, '0')}E${String(meta.episode).padStart(2, '0')}`
+    ? `S${String(clean.season).padStart(2, '0')}E${String(clean.episode).padStart(2, '0')}`
     : 'Watching'
   const activity = {
-    details: `Watching ${title}`.slice(0, 128),
+    details: `Watching ${clean.title}`.slice(0, 128),
     state: state.slice(0, 128),
     startTimestamp: Math.floor(Date.now() / 1000),
     largeImageKey: 'wardoflix_logo',

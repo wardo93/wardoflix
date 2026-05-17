@@ -2,6 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content Security Policy (v1.9.0). Locks down what the renderer
+      is allowed to load. Tuned to permit only what the app actually
+      uses:
+
+        default-src 'self'                — same-origin baseline
+        script-src 'self' + Google CDN    — Cast SDK loads from gstatic
+                  'unsafe-inline'         — inline <script type=module>
+                  'unsafe-eval'           — video.js / WebTorrent need it
+        style-src 'self' 'unsafe-inline'  — styled-jsx + Google Fonts CSS
+                  fonts.googleapis.com
+        font-src  'self' fonts.gstatic.com data: — Google Fonts woff2
+        img-src   'self' data: https:     — TMDB posters + base64 placeholders
+        media-src 'self' http://localhost:3000 — our own /stream + /remux
+        frame-src https://www.youtube-nocookie.com http://localhost:3000 — trailer iframes
+        connect-src 'self' http://localhost:3000 http://localhost:3001
+                    https://api.themoviedb.org https://image.tmdb.org
+                    https://*.opensubtitles.org https://*.opensubtitles.com
+                    https://*.opensubtitles-servers.com
+                    https://torrentio.strem.fun https://torrentio.strem.io
+                    https://opensubtitles-v3.strem.io
+                    https://www.googleapis.com
+                    https://raw.githubusercontent.com
+                    — exact API + CDN allowlist; blocks exfiltration paths
+        object-src 'none'                 — no plugins
+        base-uri 'self'                   — block <base> injection
+        form-action 'self'                — block form-submit exfil
+        frame-ancestors 'none'            — we are never iframed
+
+      Inline script + eval are forced by our existing deps (video.js
+      bundles eval to register its plugin registry, the WebTorrent
+      web bundle ditto). When we drop those in the future, tighten.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com;
+      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+      font-src 'self' https://fonts.gstatic.com data:;
+      img-src 'self' data: https:;
+      media-src 'self' blob: http://localhost:3000;
+      frame-src https://www.youtube-nocookie.com http://localhost:3000;
+      connect-src 'self' http://localhost:3000 http://localhost:3001 ws://localhost:3000 ws://localhost:3001 https://api.themoviedb.org https://image.tmdb.org https://*.opensubtitles.org https://*.opensubtitles.com https://*.opensubtitles-servers.com https://torrentio.strem.fun https://torrentio.strem.io https://opensubtitles-v3.strem.io https://www.googleapis.com https://raw.githubusercontent.com;
+      object-src 'none';
+      base-uri 'self';
+      form-action 'self';
+      frame-ancestors 'none';
+    " />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>WardoFlix — Premium Streaming</title>
