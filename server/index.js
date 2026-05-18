@@ -2879,10 +2879,56 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
-    '-fflags', '+nobuffer+flush_packets+genpts',
+    // ── v1.10.0 A/V SYNC FIX ──────────────────────────────────────
+    // The previous flag set was `+nobuffer+flush_packets+genpts`.
+    // `+genpts` discards source PTS and regenerates them from packet
+    // arrival order. Combined with re-encoded AAC (1024-sample frame
+    // boundaries that DON'T align with source audio packet boundaries)
+    // and libx264 output (which produces its OWN PTS via -tune
+    // zerolatency's small GOP), drift accumulated within ~30s on any
+    // VFR or oddly-muxed MKV: audio ran ~1s ahead of video. The user
+    // reported this as "show pretty much unwatchable".
+    //
+    // New flag set:
+    //   +discardcorrupt — drop corrupt packets without aborting the
+    //     whole stream. Better than +genpts at handling broken MKV
+    //     headers, which is what most "weird timestamp" sources are.
+    //   +igndts — ignore DTS errors on input (some MKV demuxers emit
+    //     monotonic-violating DTS that ffmpeg would otherwise crash
+    //     on). Keeps PTS intact so downstream sync logic works.
+    //   +nobuffer — same as before, low-latency.
+    // Removed +flush_packets — combined with -frag_duration 200000
+    // it was forcing fragment writes before the AAC encoder had
+    // produced a full audio frame, which itself caused minor sync
+    // hitches on slow-encoder hardware.
+    '-fflags', '+nobuffer+discardcorrupt+igndts',
     '-i', inputUrl,
     ...audioMap,
     ...videoEncoder,
+    // Constant-framerate output. -fps_mode cfr replaces deprecated
+    // -vsync cfr. ffmpeg duplicates/drops video frames as needed so
+    // the output framerate is constant — which is what the AAC encoder
+    // expects to stay in lockstep with. Without this, VFR sources
+    // (most anime, some web rips) produce a video stream whose
+    // average framerate is anything but constant, and the audio sink
+    // gradually pulls ahead of the video presentation clock.
+    '-fps_mode', 'cfr',
+    // Audio resampling with async correction. This is the single most
+    // important sync fix:
+    //   async=1 — resample audio so output PTS matches the next AAC
+    //     frame boundary, stretching/compressing audio by tiny amounts
+    //     to track the video timeline. Tolerates up to ~100ms of drift
+    //     before doing a hard discard/silence-insert.
+    //   first_pts=0 — start the output audio at PTS 0 regardless of
+    //     where -ss put us in the source. Without this, audio PTS
+    //     would start at seekSec while video PTS starts at 0, giving
+    //     the player a ~seekSec offset between the streams. That's
+    //     the "1 second behind" symptom on resumed playback.
+    //   min_hard_comp=0.100 — only do a hard sync correction (insert/
+    //     drop samples) if drift exceeds 100ms. Smaller drifts get
+    //     handled by sample-rate stretching, which is inaudible. The
+    //     ffmpeg default of 0.1 is fine but we pin it for clarity.
+    '-af', 'aresample=async=1:first_pts=0:min_hard_comp=0.100',
     // Audio: stereo AAC. Source multi-channel layouts (EAC3 7.1,
     // TrueHD, 5.1) used to reach the AAC encoder unchanged and produce
     // invalid-or-silent output. Downmixing pre-encode is what every
@@ -2891,6 +2937,17 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     '-ac', '2',
     '-c:a', 'aac',
     '-b:a', '192k',
+    // Audio sample rate: AAC's "sweet spot" is 48kHz. Some sources
+    // ship 44.1k (DVD rip era) or 96k (high-res FLAC remixes). Pinning
+    // to 48k means the resampler has a single target and the AAC
+    // encoder's frame boundary math stays stable.
+    '-ar', '48000',
+    // Mux queue size: when video frames arrive faster than audio
+    // frames (or vice versa) during seek/recovery, the default
+    // queue (1024) overflows and ffmpeg aborts with "Too many
+    // packets buffered for output stream". Bumping to 4096 covers
+    // realistic drift windows without burning more than a few MB.
+    '-max_muxing_queue_size', '4096',
     '-f', 'mp4',
     // Smaller fragment duration so the player gets its first fragment
     // (and therefore its first decodable bytes) sooner. With the

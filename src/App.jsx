@@ -2286,19 +2286,74 @@ function App() {
     // Their effects depend on this bump so they re-run after the ref is assigned.
     setPlayerReady((n) => n + 1)
 
-    // Trigger intro only when the video is actually ready to play
+    // Trigger intro only when the video is actually ready to play.
+    //
+    // v1.10.0 black-screen-on-start fix:
+    //
+    // Previous behaviour was to call player.pause() the instant
+    // canplay/loadeddata fired, hold for the 4.5s intro, then play().
+    // Problem: Chromium's MSE decoder parks its video decoder while
+    // paused at currentTime=0 with very little buffered. The audio
+    // sink is primed eagerly (because audio frames are tiny and cheap
+    // to keep ready), but the video decoder has nothing presented and
+    // goes idle. When play() resumes, audio comes up instantly while
+    // video has to cold-boot the decoder against any newly-arriving
+    // frames — hence "audio starts, screen stays black for several
+    // seconds." Reproduced especially on transcoded streams where
+    // ffmpeg's first keyframe arrives only after ~1-2s of warm-up.
+    //
+    // New approach: do NOT pause during the intro. Mute the player
+    // AND remember the start position. Then start it playing under
+    // the intro overlay. The video element is hidden visually by the
+    // overlay, but Chromium's decoder is hot — frames are being
+    // decoded and presented the whole time. When the intro ends we
+    // snap back to the remembered start position (which is within
+    // the already-decoded buffer, so it's instant) and unmute.
+    //
+    // We also switch the gating event from canplay → canplaythrough.
+    // canplay fires as soon as ANY playable frame is decoded;
+    // canplaythrough is Chromium's promise that it has enough buffered
+    // to play to the end without stalling. For our streaming case
+    // that's a stronger signal that the buffer is genuinely populated.
     let introTriggered = false
     const triggerIntro = () => {
       if (introTriggered) return
       introTriggered = true
-      try { player.pause() } catch {}
+      // Snapshot where we should land when the intro ends. For fresh
+      // starts this is 0; for resume cases it's whatever the
+      // loadedmetadata handler seeked to. We stash on the player
+      // object so the onComplete (in a different component tree) can
+      // read it without prop drilling.
+      try {
+        const t = player.currentTime() || 0
+        player.__introStartPosition = t
+      } catch { player.__introStartPosition = 0 }
+      // Pre-roll muted under the intro so the decoder warms up while
+      // the intro animation plays. The unmute + snap-back happen in
+      // the WardoFlixIntro onComplete handler.
+      try {
+        player.muted(true)
+        const playPromise = player.play()
+        // play() returns a promise in modern browsers; swallow rejections
+        // (autoplay policy edge cases) so an unhandled rejection doesn't
+        // poison the console. The intro fallback below will still fire
+        // if play() truly fails to start.
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {})
+        }
+      } catch {}
       setShowIntro(true)
     }
-    player.one('canplay', triggerIntro)
+    // canplaythrough is the conservative ready signal. loadeddata is
+    // kept as a backup so we don't hang forever if a transcode pipe
+    // produces enough bytes to be playable but never trips the
+    // "enough buffered to play through" heuristic (rare but possible
+    // on really slow swarms).
+    player.one('canplaythrough', triggerIntro)
     player.one('loadeddata', triggerIntro)
     // Safety fallback: if neither fires within 20s, just start playing without intro
     const introFallback = setTimeout(() => {
-      if (!introTriggered) { introTriggered = true; try { player.play() } catch {} }
+      if (!introTriggered) { introTriggered = true; try { player.muted(false); player.play() } catch {} }
     }, 20000)
     player.one('dispose', () => clearTimeout(introFallback))
 
@@ -4063,36 +4118,94 @@ function App() {
                           setShowIntro(false)
                           const p = playerRef.current
                           if (!p || p.isDisposed()) return
-                          // v1.7.8 black-screen fix: when the player
-                          // is paused at currentTime=0 during the
-                          // intro, Chromium's MSE decoder sometimes
-                          // idles without producing a first video
-                          // frame. play() then resumes audio while
-                          // video stays black until enough additional
-                          // bytes arrive — manifesting as "stream
-                          // starts but screen is black" on first try.
-                          // Going back + Continue Watching worked
-                          // because the second player saw a populated
-                          // buffer immediately.
-                          //
-                          // Fix: nudge currentTime by a frame's worth
-                          // (33ms ≈ 1 frame at 30fps) right before
-                          // play(). The seek forces the decoder to
-                          // flush and render a frame, so video and
-                          // audio start in lockstep when play() runs.
+                          // v1.10.0 black-screen fix: the player is
+                          // already playing (muted) under the intro
+                          // overlay, so the decoder is warm and frames
+                          // have been presenting for the full intro
+                          // duration. We snap back to the position we
+                          // saved when the intro started so the user
+                          // doesn't lose 4.5s of content during the
+                          // pre-roll. The snap-back is within the
+                          // already-buffered region (we just decoded
+                          // it!) so it's instant — no buffer flush,
+                          // no black screen.
                           try {
-                            const t = p.currentTime() || 0
-                            p.currentTime(Math.max(0, t + 0.033))
+                            const startPos = typeof p.__introStartPosition === 'number'
+                              ? p.__introStartPosition
+                              : 0
+                            const now = p.currentTime() || 0
+                            // Only snap back if we actually advanced.
+                            // If the intro was skipped early (Esc) and
+                            // we never moved, leave currentTime alone
+                            // so we don't pointlessly seek.
+                            if (now > startPos + 0.2) {
+                              p.currentTime(startPos)
+                            }
                           } catch {}
-                          // requestAnimationFrame ensures the seek
-                          // commits to Chromium before play() — without
-                          // this the two calls can coalesce and the
-                          // seek effectively becomes a no-op.
-                          requestAnimationFrame(() => {
-                            try {
-                              if (!p.isDisposed()) p.play()
-                            } catch {}
-                          })
+                          // Unmute. Restore persisted volume rather
+                          // than just .muted(false), because muted=true
+                          // can leave the volume slider visually at 0
+                          // in some video.js versions. Reading-then-
+                          // setting forces a UI refresh in PlayerControls.
+                          try {
+                            p.muted(false)
+                            const v = p.volume()
+                            if (typeof v === 'number' && v >= 0) {
+                              p.volume(v)
+                            }
+                          } catch {}
+                          // Edge case: if the intro fired before the
+                          // player ever reached playing state (e.g. user
+                          // hit ESC to skip mid-pre-roll), make sure
+                          // play() is in flight. Cheap belt-and-suspenders.
+                          try {
+                            if (p.paused()) {
+                              const pp = p.play()
+                              if (pp && typeof pp.catch === 'function') pp.catch(() => {})
+                            }
+                          } catch {}
+                          // v1.10.0 first-frame watchdog: if no real
+                          // video frame has presented within 1.5s of
+                          // unmute (decoder genuinely stuck despite
+                          // pre-roll), force a hard reload by re-issuing
+                          // src with a cache-buster. Uses
+                          // requestVideoFrameCallback when available
+                          // (Chrome 83+, Electron 12+ → we ship E32),
+                          // falls back to a currentTime poll otherwise.
+                          try {
+                            const videoEl = p.tech?.({ IWillNotUseThisInPlugins: true })?.el?.()
+                              || playerContainerRef.current?.querySelector('video')
+                            if (videoEl) {
+                              let frameSeen = false
+                              if (typeof videoEl.requestVideoFrameCallback === 'function') {
+                                videoEl.requestVideoFrameCallback(() => { frameSeen = true })
+                              } else {
+                                const startT = p.currentTime() || 0
+                                const poll = setInterval(() => {
+                                  if (p.isDisposed()) { clearInterval(poll); return }
+                                  if ((p.currentTime() || 0) > startT + 0.1) { frameSeen = true; clearInterval(poll) }
+                                }, 100)
+                                setTimeout(() => clearInterval(poll), 1600)
+                              }
+                              setTimeout(() => {
+                                if (frameSeen || p.isDisposed()) return
+                                // No frame in 1.5s — decoder is silently
+                                // stuck. Re-issue src to force a fresh
+                                // tear-down via the existing player effect.
+                                try {
+                                  const currentSrc = source
+                                  if (currentSrc) {
+                                    const pos = p.currentTime() || 0
+                                    if (pos > 0 && playingMetadataRef.current) {
+                                      try { saveResumePosition(playingMetadataRef.current, pos, p.duration() || 0) } catch {}
+                                    }
+                                    const sep = currentSrc.includes('?') ? '&' : '?'
+                                    setSource(`${currentSrc}${sep}fresh=${Date.now()}`)
+                                  }
+                                } catch {}
+                              }, 1500)
+                            }
+                          } catch {}
                         }}
                       />
                     )}

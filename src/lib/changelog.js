@@ -13,6 +13,18 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.10.0',
+    date: '2026-05-18',
+    title: '🎬 Playback overhaul — no more black screens or audio drift',
+    items: [
+      'Fixed the "audio plays but screen is black" bug on first stream start. Root cause: Chromium\'s MSE video decoder went idle while paused at t=0 during the 4.5s intro animation. The decoder now stays hot — playback runs muted under the intro overlay, then snaps back to the start position when the intro ends. No more "go back, click Continue Watching to actually see the show" workaround.',
+      'Fixed audio drift on transcoded streams (the "show becomes unwatchable, audio is a second ahead" bug). Rewrote the ffmpeg pipeline: dropped the old +genpts timestamp regeneration, added aresample=async=1 to keep audio resampling in lockstep with video, pinned a constant output framerate, and standardised the audio sample rate to 48 kHz. VFR sources and weirdly-muxed MKVs now stay tight.',
+      'Bigger muxing queue (4096 packets) so brief A/V drift during seek/recovery no longer aborts the transcode with "too many packets buffered".',
+      'First-frame watchdog: if the decoder is silently stuck 1.5s after the intro ends (rare belt-and-suspenders case), the player auto-reloads via the fresh-probe path instead of leaving you staring at a blank screen.',
+      'Android port paused — desktop reliability comes first.',
+    ],
+  },
+  {
     version: '1.9.3',
     date: '2026-05-17',
     title: 'Hover trailers: fixed YouTube error 153',
