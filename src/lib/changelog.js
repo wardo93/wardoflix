@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.2',
+    date: '2026-05-18',
+    title: '🚨 Hotfix — v1.11.1 was a broken release',
+    items: [
+      'v1.11.1 shipped with the server in a crash loop. Cause: I moved the path-traversal helper into src/lib/path-safety.js so unit tests could import it, but src/ is not in electron-builder\'s build.files (only dist/, electron/, server/ are). The asar never contained the file. Every server fork crashed with ERR_MODULE_NOT_FOUND, the watchdog gave up after 5 retries, and every /api/* call returned connection-refused — meaning For You, Home, Library, and Search all rendered empty.',
+      'Fix: moved to server/lib/path-safety.js where it\'s covered by server/**/*. The renderer never imported it; this move is invisible everywhere except the asar.',
+      'Prevention: new electron-builder afterAllArtifactBuild hook spawns the packaged WardoFlix.exe and polls /api/health for up to 25 seconds. If the server doesn\'t come up, the publish aborts. Future packaging regressions of this class — anything imported from a path not in build.files, missing asarUnpack entries, native binding mismatches — get caught at the last possible moment instead of reaching users.',
+      'The v1.11.1 path-traversal security fix itself was correct; it just wasn\'t actually running because the server couldn\'t start. v1.11.2 restores it.',
+    ],
+  },
+  {
     version: '1.11.1',
     date: '2026-05-18',
     title: 'v1.11.0 self-QA — three bugs found and fixed',

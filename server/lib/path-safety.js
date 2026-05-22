@@ -1,8 +1,14 @@
-// v1.11.1 — path-safety helpers. Pure JS, no Node-specific deps, no
-// DOM. Server imports from here AND the renderer can if it ever needs
-// the same validation client-side. Lives in src/lib because that's
-// where shared pure-JS utilities live (util.js, url.js); the server
-// imports them via relative path too.
+// v1.11.2 — path-safety helpers. Pure JS, no Node-specific deps, no
+// DOM. Server imports from here.
+//
+// v1.11.1 originally put this at src/lib/path-safety.js so unit tests
+// in test/path-safety.test.js could share it with the renderer. That
+// was a mistake: src/ is NOT included in electron-builder's build.files
+// (only dist/, electron/, server/ are), so the packaged asar never
+// contained the file and the server crashed with ERR_MODULE_NOT_FOUND
+// on every fork. v1.11.2 moves it under server/lib/ where it's covered
+// by `server/**/*` and ships correctly. The renderer never imported
+// it; the move is invisible to renderer code.
 
 /**
  * Decode a URL path repeatedly until stable. Handles double- and

@@ -2,7 +2,7 @@
   "name": "wardoflix",
   "productName": "WardoFlix",
   "private": true,
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "WardoFlix — a premium streaming client",
   "author": "WardoFlix",
   "main": "electron/main.js",
@@ -28,6 +28,7 @@
     "productName": "WardoFlix",
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
+    "afterAllArtifactBuild": "scripts/smoke-test-packaged.cjs",
     "files": [
       "dist/**/*",
       "electron/**/*",

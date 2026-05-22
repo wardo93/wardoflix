@@ -10,7 +10,7 @@ import { spawn } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import WebTorrent from 'webtorrent'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-import { hasPathTraversal } from '../src/lib/path-safety.js'
+import { hasPathTraversal } from './lib/path-safety.js'
 
 // Read app version from package.json so /api/health can report it and
 // the client can pin a build identifier to its topbar.
@@ -3192,9 +3192,10 @@ app.get('/api/external-url/:infoHash/*', async (req, res) => {
   // `%2e%2e`; mixed forms like `%2e.` or `.%2e` slipped past because
   // the check looked at the raw bytes. hasPathTraversal decodes
   // repeatedly until stable (catches multi-encoded attacks) then
-  // looks for a literal `..` segment. Lives in src/lib/path-safety.js
-  // so unit tests can cover the decode logic — see
-  // test/path-safety.test.js.
+  // looks for a literal `..` segment. Lives in server/lib/path-safety.js
+  // (v1.11.2 — moved from src/lib/ because src/ isn't in the asar
+  // build.files, which is what crashed v1.11.1's packaged server).
+  // Unit tests in test/path-safety.test.js cover the decode logic.
   if (hasPathTraversal(path)) {
     return res.status(400).json({ error: 'path traversal blocked' })
   }

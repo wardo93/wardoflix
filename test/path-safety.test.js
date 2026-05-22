@@ -7,7 +7,7 @@
 // dangerous filename is exercised too.
 
 import { describe, it, expect } from 'vitest'
-import { deepDecodePath, hasPathTraversal } from '../src/lib/path-safety.js'
+import { deepDecodePath, hasPathTraversal } from '../server/lib/path-safety.js'
 
 describe('deepDecodePath', () => {
   it('passes through ASCII unchanged', () => {
