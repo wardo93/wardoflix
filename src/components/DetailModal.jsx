@@ -153,13 +153,27 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
 
     // Parallel: TMDB details (trailer + cast + similar). Best-effort —
     // if TMDB is down or the endpoint fails, the modal still works.
+    // v1.11.1 — gated by an AbortController so a quick close
+    // doesn't trigger setState-on-unmounted warnings or leak the
+    // resolution onto a dead component.
+    const detailsCtl = new AbortController()
     if (item.id) {
       // Use the inferred type so details (trailer/cast/similar) hit
       // the right TMDB endpoint even when `item.type` is missing.
-      fetch(`/api/details/${itemType}/${item.id}`)
+      fetch(`/api/details/${itemType}/${item.id}`, { signal: detailsCtl.signal })
         .then((r) => r.ok ? r.json() : null)
-        .then((d) => { if (d) setDetails(d) })
+        .then((d) => { if (d && !detailsCtl.signal.aborted) setDetails(d) })
         .catch(() => {})
+    }
+
+    // v1.11.1 — unmount cleanup. Without this, the loadTorrents call
+    // above (which goes through torrentsAbortRef) would keep
+    // resolving onto a torn-down component when the user closes the
+    // modal mid-fetch. Aborting on unmount turns that .then()
+    // continuation into an AbortError which the catch swallows.
+    return () => {
+      try { torrentsAbortRef.current?.abort() } catch {}
+      try { detailsCtl.abort() } catch {}
     }
   }, [item, loadTorrents])
 

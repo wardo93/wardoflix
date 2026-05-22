@@ -13,6 +13,18 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.1',
+    date: '2026-05-18',
+    title: 'v1.11.0 self-QA — three bugs found and fixed',
+    items: [
+      'Roleplayed as a user testing v1.11.0; probed the new attack surface; found three bugs in my own changes; fixed them.',
+      'Bug 1 (security): the path-traversal guard on /api/external-url only caught fully-literal `..` or fully-encoded `%2e%2e`. Mixed encodings (`%2e.`, `.%2e`) and double-encodings slipped through, and would have decoded to `..` once the external player\'s HTTP client opened them. Replaced the inline regex with a `hasPathTraversal()` helper that decodes repeatedly until stable, then checks for a `..` SEGMENT (preceded by start-or-slash, followed by end-or-slash) so legitimate filenames like `..foo` still pass.',
+      'Bug 2 (UX/DX): DetailModal\'s AbortController had no `useEffect` cleanup, so closing the modal mid-fetch left the `/api/torrents` request resolving onto a torn-down component. Now both the torrent list and the TMDB details fetch abort on unmount.',
+      'Bug 3 (lint): removed dead `Component` import from App.jsx left over from the earlier inline error boundary.',
+      'Path-safety logic extracted to src/lib/path-safety.js + 16 new regression tests in test/path-safety.test.js. Total test count: 50/50 passing across 2 files.',
+    ],
+  },
+  {
     version: '1.11.0',
     date: '2026-05-18',
     title: '🏗️ Full-codebase audit pass — reliability, security, tests, CI',

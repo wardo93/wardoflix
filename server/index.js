@@ -10,6 +10,7 @@ import { spawn } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import WebTorrent from 'webtorrent'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+import { hasPathTraversal } from '../src/lib/path-safety.js'
 
 // Read app version from package.json so /api/health can report it and
 // the client can pin a build identifier to its topbar.
@@ -3186,9 +3187,15 @@ app.get('/api/external-url/:infoHash/*', async (req, res) => {
   if (path.length > 1024) {
     return res.status(400).json({ error: 'path too long' })
   }
-  // Match `..` literally, AND its url-encoded form `%2e%2e`. Doing
-  // the check on the raw value (before any decode) catches both.
-  if (/(?:^|[/\\])\.\.(?:[/\\]|$)|%2e%2e/i.test(path)) {
+  // v1.11.1 — decode-then-check via shared helper. The previous
+  // inline regex only caught fully-literal `..` or fully-encoded
+  // `%2e%2e`; mixed forms like `%2e.` or `.%2e` slipped past because
+  // the check looked at the raw bytes. hasPathTraversal decodes
+  // repeatedly until stable (catches multi-encoded attacks) then
+  // looks for a literal `..` segment. Lives in src/lib/path-safety.js
+  // so unit tests can cover the decode logic — see
+  // test/path-safety.test.js.
+  if (hasPathTraversal(path)) {
     return res.status(400).json({ error: 'path traversal blocked' })
   }
   const lan = getLanIp()
