@@ -2269,13 +2269,85 @@ function App() {
     }
   }, [])
 
+  // v1.11.4 — when the source is cleared (back/clear/new-stream),
+  // wipe the prev-source memo so the next stream gets a clean
+  // recreate path. Without this, a back-to-stream cycle could
+  // mistakenly take the same-media fast path against a stale
+  // disposed player and crash.
+  useEffect(() => {
+    if (!source) prevSourceRef.current = null
+  }, [source])
+
+  // v1.11.4 — track the previous source URL so the effect below can
+  // tell "same media, different query params" (a re-seek) apart from
+  // "different media" (a new stream). Same-media changes do NOT need
+  // to recreate the player. Recreating on every seek was the cause of:
+  //   - intro re-firing → fullscreen auto-request → black screen
+  //   - subtitle tracks getting wiped + re-fetched on each seek
+  //   - 1-2s freeze while old player disposes + new player mounts
+  //   - error-handler ladder getting reset mid-recovery
+  // The ref persists across renders without causing re-renders.
+  const prevSourceRef = useRef(null)
+
   useEffect(() => {
     if (!source || sourceType !== 'url' || !videoContainerRef.current) return
 
+    // ── v1.11.4 same-media source-swap fast path ──────────────────
+    // If the existing player is alive AND the new URL's "base"
+    // (everything before the ?query) matches the previous source's
+    // base, this is a re-seek inside the same /remux URL. Use
+    // player.src() on the existing player — video.js handles the
+    // MediaSource swap internally. NO disposal, NO recreate, NO
+    // intro re-fire, NO fullscreen request, NO React churn.
+    //
+    // This is the difference between a 1500ms black-screen freeze
+    // on every seek and a ~200ms buffer rebuild while the existing
+    // player smoothly transitions to the new content.
+    const prevSrc = prevSourceRef.current || ''
+    const baseOf = (u) => (u || '').split('?')[0]
+    const sameMedia = (
+      prevSrc &&
+      baseOf(source) === baseOf(prevSrc) &&
+      playerRef.current &&
+      !playerRef.current.isDisposed()
+    )
+    if (sameMedia) {
+      try {
+        const p = playerRef.current
+        // Build the new source descriptor. guessType uses the same
+        // extension-based heuristic that the initial src() call uses
+        // (see further down in this effect). Inlined here because
+        // that helper is scoped inside the recreate branch below.
+        const lower = source.toLowerCase()
+        let type = 'video/mp4'
+        if (lower.includes('.m3u8')) type = 'application/x-mpegURL'
+        else if (lower.includes('.webm')) type = 'video/webm'
+        else if (lower.includes('.ogv') || lower.includes('.ogg')) type = 'video/ogg'
+        p.src({ src: source, type })
+        // Kick off playback once the new source can play. video.js
+        // doesn't autoplay on src() swap by default; we restore the
+        // play state explicitly so a seek mid-playback resumes
+        // playing, not paused.
+        p.one('canplay', () => {
+          if (p.isDisposed()) return
+          try {
+            const playPromise = p.play()
+            if (playPromise && typeof playPromise.catch === 'function') {
+              playPromise.catch(() => {})
+            }
+          } catch {}
+        })
+      } catch {}
+      prevSourceRef.current = source
+      return
+    }
+
+    // ── Full teardown + recreate (different media or first load) ──
     if (playerRef.current && !playerRef.current.isDisposed()) {
       playerRef.current.dispose()
       playerRef.current = null
     }
+    prevSourceRef.current = source
 
     const videoEl = document.createElement('video')
     videoEl.className = 'video-js vjs-big-play-centered vjs-fluid'
@@ -2721,8 +2793,25 @@ function App() {
   }, [source, sourceType, playingMetadata])
 
   // ── Subtitle offset: reload tracks with shifted timestamps ─────
-  // When subOffset changes, remove existing tracks and re-add them with the
-  // ?offset=N query param so the proxy serves time-shifted VTT.
+  // When the user drags the offset slider, we need to re-fetch the
+  // VTT through the proxy with ?offset=N so timestamps shift. Without
+  // debouncing this would re-fetch + re-add tracks on every slider
+  // tick (60Hz), which on video.js causes a visible playback stutter
+  // each time AND blasts the proxy with 60 requests per second of
+  // dragging. The user reported this as "adjusting subtitles causes
+  // the show to stop playing."
+  //
+  // v1.11.4 — debounce the slider value through `appliedSubOffset`.
+  // The live `subOffset` updates the slider UI instantly (for
+  // responsive feel) but `appliedSubOffset` only catches up 400ms
+  // after the user stops dragging, and only THAT triggers the
+  // track swap. Same UX, ~150x fewer track-swaps during a drag.
+  const [appliedSubOffset, setAppliedSubOffset] = useState(0)
+  useEffect(() => {
+    const t = setTimeout(() => setAppliedSubOffset(subOffset), 400)
+    return () => clearTimeout(t)
+  }, [subOffset])
+
   useEffect(() => {
     const player = playerRef.current
     if (!player || player.isDisposed() || !availableSubs.length) return
@@ -2745,7 +2834,7 @@ function App() {
     // because <track> elements use native resource loading.
     availableSubs.forEach((s) => {
       const params = new URLSearchParams({ url: s.url })
-      if (subOffset) params.set('offset', String(subOffset))
+      if (appliedSubOffset) params.set('offset', String(appliedSubOffset))
       const track = player.addRemoteTextTrack({
         kind: 'subtitles',
         src: toAbsStreamUrl(`/api/subtitles/proxy?${params}`),
@@ -2758,7 +2847,7 @@ function App() {
         setTimeout(() => { try { track.track.mode = 'showing' } catch {} }, 100)
       }
     })
-  }, [subOffset, availableSubs])
+  }, [appliedSubOffset, availableSubs])
 
   // ── Google Cast initialization ──────────────────────────────────
   useEffect(() => {

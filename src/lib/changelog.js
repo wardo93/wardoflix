@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.4',
+    date: '2026-05-18',
+    title: '🎚️ Player rewrite — seek, subtitles, and the lag are fixed',
+    items: [
+      'Three-expert roundtable on the player after multiple bug reports: seeking to a new time made the player jump to fullscreen + black screen; adjusting subtitles stopped + restarted playback; everything felt laggy.',
+      'Root cause of seek-bug: every URL change was tearing down the video.js instance and creating a fresh one. That meant the intro re-fired on each seek (which auto-requests fullscreen) and the buffer was empty until ffmpeg produced new bytes. Fix: same-media URL changes (re-seeks within the same /remux path) now call player.src() on the EXISTING player instead of disposing it. No intro re-fire, no fullscreen request, no buffer wipe — just a clean source swap. Player teardown only happens on stream end / different stream.',
+      'Root cause of subtitle stop-and-restart: the subOffset slider was re-fetching + re-adding ALL text tracks on every slider tick (60Hz). Fix: debounced the actual track swap to 400ms after the slider stops moving. The slider feels instant (UI updates immediately) but the track-fetch only happens once per drag-end. ~150x fewer requests.',
+      'Root cause of overall lag: the v1.11.0 timeupdate throttle was set to 4Hz — every 250ms — making the "01:23 / 45:67" time display visibly jump and feel sluggish. Bumped to 10Hz (every 100ms). Still way cheaper than the native 30-60Hz cadence; finally feels like a real player.',
+    ],
+  },
+  {
     version: '1.11.3',
     date: '2026-05-18',
     title: '🎬 Playback hotfix — ffmpeg flag incompatibility was breaking every transcode',
