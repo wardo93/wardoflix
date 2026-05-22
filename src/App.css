@@ -3616,9 +3616,62 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   background: #000;
   border-radius: var(--radius-lg);
   box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.6);
+  /* v1.11.5 — pin to the 16:9 player aspect so the connecting card
+     occupies the exact area the video will fill. Prevents a layout
+     jump when the stream URL lands and the player swaps in. */
+  aspect-ratio: 16 / 9;
+  width: 100%;
 }
 
 .player-empty p { margin: 0; font-size: 0.95rem; }
+
+/* v1.11.5 — Netflix-style connecting screen. Prominent centered card
+   over the player area while the magnet → torrent → /api/stream →
+   /remux chain warms up. The card holds:
+     - large spinner (defined elsewhere)
+     - title we're connecting to (so the user knows the click landed)
+     - peer-count subtitle that updates from streamProgress
+   Background is a soft radial vignette so the card pops without
+   feeling boxed-in. */
+.player-empty--connecting {
+  background: radial-gradient(ellipse at center, #1a1108 0%, #0a0502 70%, #050200 100%);
+}
+.player-connecting-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+  padding: 2.5rem 3rem;
+  text-align: center;
+  max-width: 540px;
+}
+.player-connecting-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.player-connecting-sub {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+.player-connecting-body {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+  /* Subtle pulse so the user understands the app is alive even when
+     the peer-count text doesn't change for a few seconds. */
+  animation: connecting-pulse 2.2s ease-in-out infinite;
+}
+@keyframes connecting-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
 
 /* v1.7.9 — rich empty state for the Stream tab idle screen. Replaces
    the bare "paste a URL" line with a discoverable card. */

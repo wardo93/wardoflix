@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.5',
+    date: '2026-05-18',
+    title: '🎯 Netflix-style UX cleanup',
+    items: [
+      'Removed the "Paste video URL or magnet link…" input bar from above the player. The app is a full Netflix-style flow now — users land on Browse, click a title, click Play. The paste-URL field was a holdover from the early dev UX that nobody used once Browse was good enough.',
+      'Removed the Browse / Stream tab buttons from the topbar. Same reason: the navigation is implicit now (click a title → player appears; player back button → back to Browse). The internal routing still exists but it\'s invisible.',
+      'Connecting state is now a prominent centered card over the player area showing the title being loaded ("Connecting to The Boys · S01E01") and a live peer count that updates as the swarm fills ("Reaching 12 peers…"). Pulses subtly so the user knows the app is alive even when the peer count is still climbing. The card occupies the exact 16:9 area the video will fill, so the swap-in is layout-stable.',
+      'The empty-state card (rare case: stream tab with no source, not loading) is now a friendly "Nothing playing — pick something from Browse" instead of the old "paste a magnet link" instructions.',
+    ],
+  },
+  {
     version: '1.11.4',
     date: '2026-05-18',
     title: '🎚️ Player rewrite — seek, subtitles, and the lag are fixed',

@@ -4062,10 +4062,14 @@ function App() {
           <span className="logo-mark">W</span>
           <span>Wardo<span className="logo-flix">Flix</span></span>
         </h1>
-        <nav className="topbar-nav">
-          <button className={tab === 'browse' ? 'active' : ''} onClick={() => setTab('browse')}>Browse</button>
-          <button className={tab === 'stream' ? 'active' : ''} onClick={() => setTab('stream')}>Stream</button>
-        </nav>
+        {/* v1.11.5 — Browse/Stream tab buttons removed. The app is a
+            Netflix-style flow now: users land on Browse, click a title,
+            click Play. They never need to manually pick "Stream" as a
+            tab. The internal `tab` state still routes between the two
+            pages (handleStream() sets it to 'stream' to mount the
+            player, handleClear() sets it back to 'browse'), but it's
+            implicit. Clicking the logo (above) is the explicit "go
+            home" affordance. */}
         {appVersion && (
           <div
             className="topbar-version"
@@ -4176,32 +4180,14 @@ function App() {
 
         {tab === 'stream' && (
           <div className="stream-page">
-            <div className="stream-input-bar">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleStream()}
-                placeholder="Paste video URL or magnet link..."
-                disabled={loading}
-                autoFocus
-                ref={(el) => {
-                  // Focus on tab-switch even after the first mount: autoFocus only
-                  // fires once. Re-select() puts the caret on any previous value so
-                  // the user can paste over it immediately.
-                  if (el && tab === 'stream' && !source && !loading) {
-                    try { el.focus({ preventScroll: true }); if (input) el.select() } catch {}
-                  }
-                }}
-              />
-              <button onClick={() => handleStream()} disabled={loading} className="btn btn-accent">
-                {loading ? <><span className="spinner" /> Connecting...</> : 'Stream'}
-              </button>
-              {(source || input) && (
-                <button onClick={handleClear} className="btn btn-ghost">Clear</button>
-              )}
-            </div>
-
+            {/* v1.11.5 — paste-URL / magnet input bar removed. The app
+                is Netflix-style now: users pick titles from Browse,
+                click Play in the detail modal, the stream flow runs
+                in the background and the player auto-appears below.
+                Direct paste was a holdover from the early dev UX; no
+                one used it once Browse was good enough. Removing it
+                cleans up the stream page to be purely the player +
+                its peer-connection indicator + any warning banners. */}
             {error && <div className="stream-error">{error}</div>}
             {streamWarning && !error && <div className="stream-warning">{streamWarning}</div>}
 
@@ -4394,17 +4380,44 @@ function App() {
                   </div>
                 </>
               ) : loading ? (
-                <div className="player-empty">
-                  <span className="spinner large" />
-                  <p>Connecting to peers...</p>
+                /* v1.11.5 — prominent centered "Connecting" indicator
+                   so the user clearly sees the app is working on it.
+                   Renders into the same 16:9 player area the actual
+                   video will fill, so there's no layout jump when the
+                   stream URL lands and the player mounts in its
+                   place. Shows the title we're connecting to, the
+                   peer count once the SSE progress stream opens
+                   (streamProgress is populated by the watchdog), and
+                   the active fallback-warning if we've already
+                   abandoned one source and moved to the next. */
+                <div className="player-empty player-empty--connecting">
+                  <div className="player-connecting-card">
+                    <span className="spinner large" />
+                    <h2 className="player-connecting-title">
+                      {playingMetadata?.title ? `Connecting to ${playingMetadata.title}` : 'Connecting…'}
+                      {playingMetadata?.season && playingMetadata?.episode
+                        ? <span className="player-connecting-sub"> · S{playingMetadata.season}E{playingMetadata.episode}</span>
+                        : null}
+                    </h2>
+                    <p className="player-connecting-body">
+                      {(() => {
+                        const peers = streamProgress?.peers
+                        if (typeof peers === 'number' && peers > 0) {
+                          return `Reaching ${peers} peer${peers === 1 ? '' : 's'}…`
+                        }
+                        return 'Finding peers in the swarm…'
+                      })()}
+                    </p>
+                  </div>
                 </div>
               ) : (
-                /* v1.7.9 — replaced the bare "paste a URL" placeholder
-                   with a discoverable card that explains what the
-                   Stream tab actually does and offers shortcuts to
-                   the more common path (Browse). For users who land
-                   here by accident, "what is this?" used to require
-                   a guess. */
+                /* v1.11.5 — empty stream tab (no source, not loading)
+                   should rarely happen since handleStream auto-sets
+                   tab='stream' and handleClear flips back to browse.
+                   If it does happen (network failure that leaves
+                   the user stranded on stream without a source), the
+                   error/streamWarning banners above already explain
+                   what went wrong; this card offers a way back. */
                 <div className="player-empty player-empty--rich">
                   <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
                     <rect x="2" y="4" width="20" height="14" rx="2" />
@@ -4412,22 +4425,10 @@ function App() {
                     <line x1="8" y1="21" x2="16" y2="21" />
                     <line x1="12" y1="18" x2="12" y2="21" />
                   </svg>
-                  <h2 className="player-empty-title">Direct Stream</h2>
+                  <h2 className="player-empty-title">Nothing playing</h2>
                   <p className="player-empty-body">
-                    Paste a <strong>magnet link</strong> or <strong>direct video URL</strong> in
-                    the box above to stream it. Or skip this entirely
-                    and pick something from <button className="player-empty-link" onClick={() => setTab('browse')}>Browse</button>.
+                    Pick something from <button className="player-empty-link" onClick={() => setTab('browse')}>Browse</button> to start watching.
                   </p>
-                  <div className="player-empty-tips">
-                    <div className="player-empty-tip">
-                      <kbd>magnet:?</kbd>
-                      <span>WebTorrent magnet — paste and press Enter</span>
-                    </div>
-                    <div className="player-empty-tip">
-                      <kbd>https://</kbd>
-                      <span>Direct .mp4 / .mkv / .m3u8 URL</span>
-                    </div>
-                  </div>
                 </div>
               )}
             </div>
