@@ -13,6 +13,16 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.6',
+    date: '2026-05-18',
+    title: '⚡ Hotfix — the app was rate-limiting itself',
+    items: [
+      'User saw "Episode lookup failed (HTTP 429) — the backend may be unreachable" while clicking around. Root cause: the v1.9.0 hardening pass added a 200-requests-per-60-second-per-IP rate limit. That sounded generous but turns out a single stream-start fires ~50 calls in 5 seconds (subtitle proxy ~20 retries, audio probe, SSE setup, progress polling, etc.), so the renderer kept rate-limiting itself.',
+      'Fix: skip the rate limit entirely for loopback IPs (127.0.0.1, ::1, ::ffff:127.0.0.1). The /api/* surface is already locked to localhost via requireLocal; a local process spamming us is the only "attacker" the rate limit was blocking, and that process already has filesystem read on our localStorage / .env / asar — the rate limit defends against nothing it doesn\'t. For non-loopback fallback (which shouldn\'t happen because requireLocal already 403s those) bumped to 1000/60s.',
+      'Also fixed the misleading error message: a 429 used to say "backend may be unreachable", which is wrong — 429 means rate-limited, not down. Now distinguishes 429 ("throttled, wait a few seconds"), 504 ("indexer slow"), and other 5xx ("indexer returned an error").',
+    ],
+  },
+  {
     version: '1.11.5',
     date: '2026-05-18',
     title: '🎯 Netflix-style UX cleanup',

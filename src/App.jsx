@@ -3195,7 +3195,16 @@ function App() {
         // so the user sees an actionable message, not a confusing "no
         // source" when really the server crashed.
         if (!r.ok) {
-          setError(`Episode lookup failed (HTTP ${r.status}) — the backend may be unreachable.`)
+          // v1.11.6 — be specific about WHY the lookup failed.
+          // Lumping every non-2xx under "backend may be unreachable"
+          // misled debugging (e.g. 429 meant rate-limited, not down;
+          // 504 meant the torrent metadata fetch timed out, etc.).
+          let msg
+          if (r.status === 429) msg = 'Episode lookup throttled — too many requests at once. Wait a few seconds and try again.'
+          else if (r.status === 504) msg = 'Episode lookup timed out — the torrent index is slow right now. Try again in a moment.'
+          else if (r.status >= 500) msg = `Episode lookup failed (HTTP ${r.status}) — the indexer returned an error.`
+          else msg = `Episode lookup failed (HTTP ${r.status}).`
+          setError(msg)
           setLoading(false); return
         }
         const j = await r.json().catch(() => null)

@@ -379,21 +379,46 @@ app.use((req, res, next) => {
   next()
 })
 
-// In-memory per-IP rate limit. 200 requests per 60-second window
-// is generous for our localhost-only client (each browse page fires
-// ~12 catalog calls), but tight enough to catch a runaway loop or
-// a malicious local process spamming us. Window is rolling, not
-// fixed — we keep the timestamp of each request and drop those
-// past the window before checking the count.
+// In-memory per-IP rate limit. Defense against a runaway loop or a
+// network actor brute-forcing us. v1.9.0 set this to 200 req/60s
+// which sounded generous but turned out to be way too tight in
+// practice: a single stream-start burst fires ~50 calls in 5
+// seconds (subtitle proxy x20 retries, audio probe, SSE setup,
+// progress polling, etc.) and the renderer rate-limited itself,
+// surfacing as "Episode lookup failed (HTTP 429)" mid-flow.
+//
+// v1.11.6 — bumped to 1000 req/60s AND we skip the limit entirely
+// for loopback IPs. Reasoning: /api/* is already localhost-only via
+// requireLocal (see further down). The only "attacker" who can hit
+// us from 127.0.0.1 is a local process running as the same user,
+// who already has filesystem read on our localStorage, .env, asar,
+// and userData. Rate-limiting our own renderer's burst was breaking
+// legitimate flows while not defending against anything realistic.
+// Non-loopback requests still get the 1000-req limit as defense in
+// depth (though they should already be 403'd by requireLocal).
 const RATE_LIMIT_WINDOW_MS = 60_000
-const RATE_LIMIT_MAX = 200
+const RATE_LIMIT_MAX = 1000
 const _rateBuckets = new Map() // ip -> number[] of request timestamps
+// Loopback IP patterns. node's req.ip can return:
+//   "::1"           — IPv6 loopback
+//   "127.0.0.1"     — IPv4 loopback
+//   "::ffff:127.0.0.1" — IPv4-mapped IPv6 loopback (common on Windows)
+function isLoopback(ip) {
+  if (!ip) return false
+  return ip === '::1'
+      || ip === '127.0.0.1'
+      || ip.startsWith('127.')
+      || ip === '::ffff:127.0.0.1'
+      || ip.startsWith('::ffff:127.')
+}
 function rateLimitMiddleware(req, res, next) {
   // Skip the data-plane — TVs may pull /stream in many small range
   // requests and we don't want to throttle them.
   const url = req.url || ''
   if (url.startsWith('/stream') || url.startsWith('/remux')) return next()
+  // Skip loopback entirely — see comment above.
   const ip = req.ip || req.connection?.remoteAddress || 'unknown'
+  if (isLoopback(ip)) return next()
   const now = Date.now()
   const cutoff = now - RATE_LIMIT_WINDOW_MS
   let bucket = _rateBuckets.get(ip)
