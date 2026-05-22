@@ -120,8 +120,21 @@ export function PlayerControls({
     if (!p || p.isDisposed()) return
     const onPlay = () => setPlaying(true)
     const onPause = () => setPlaying(false)
+    // v1.11.0 — throttle timeupdate to ~4Hz. video.js fires the
+    // event at the underlying <video> element's cadence which is
+    // 30-60 Hz on modern Chromium. Re-running PlayerControls' state
+    // updates at that rate (with PlayerControls being a fairly
+    // heavy component — seek bar, time display, sub menu, audio
+    // menu) was burning ~3-5% CPU on transcoded streams where the
+    // host is already pegged. The seek bar UI only needs to update
+    // ~4 times per second to feel smooth; quicker than that the
+    // human eye can't tell the difference.
+    let lastTimeUpdateAt = 0
     const onTime = () => {
       if (seekingRef.current) return
+      const now = Date.now()
+      if (now - lastTimeUpdateAt < 250) return
+      lastTimeUpdateAt = now
       setCurrentTime(p.currentTime() || 0)
       const d = getSafeDuration()
       setDuration(d)

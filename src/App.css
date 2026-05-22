@@ -3025,7 +3025,11 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   flex-shrink: 0;
 }
 
-/* Seek bar */
+/* Seek bar.
+   v1.11.0 — the visual line stays at 4px (6px on hover) for the
+   crisp Netflix-like look, but the hit-box is widened to 16px tall
+   via an ::before pseudo-element. On touchscreens (no hover), the
+   media query at the bottom enlarges the visual bar too. */
 .cc-seek {
   position: relative;
   height: 4px;
@@ -3035,7 +3039,28 @@ body.wf-intro-lock::-webkit-scrollbar { display: none; width: 0; height: 0; }
   margin-bottom: 0.6rem;
   transition: height 0.15s;
 }
+.cc-seek::before {
+  /* Invisible expansion of the click/touch target. The pseudo is
+     stacked above the bar visually (z-index 1) but is fully
+     transparent, so the seek bar still LOOKS thin while being easy
+     to grab. */
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  bottom: -6px;
+  z-index: 1;
+}
 .cc-seek:hover { height: 6px; }
+/* Coarse pointer = touchscreen. Bump the visual bar to 10px (still
+   slim, but actually grabbable with a fingertip — Apple HIG and
+   Material recommend ≥ 11mm touch targets, ~44px). The ::before
+   widening above already covers the hit-box; this bumps the visual. */
+@media (pointer: coarse) {
+  .cc-seek { height: 10px; }
+  .cc-seek:hover { height: 10px; }
+}
 
 .cc-seek-buffer {
   position: absolute;

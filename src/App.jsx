@@ -13,6 +13,7 @@ import {
   useDebounce, useEdgeHoverScroll, useWheelHorizontalScroll, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
 import { ToastHost, ShortcutsOverlay, DebugOverlay, toast } from './components/Overlays.jsx'
+import { ErrorBoundary } from './components/ErrorBoundary.jsx'
 import { WardoFlixIntro, pickPiracyQuote } from './components/WardoFlixIntro.jsx'
 import { PosterCard } from './components/PosterCard.jsx'
 import { ContentRow } from './components/ContentRow.jsx'
@@ -359,11 +360,20 @@ function ProfileGate({ profiles, onPick, onManage }) {
   // Auto-open the creator on first run — no profiles means we can't
   // show a picker anyway, and jumping straight to "make one" is less
   // friction than staring at an empty screen with a single button.
+  // v1.11.0 — different copy on first launch (no profiles yet) so
+  // the user understands "Who's watching?" doesn't apply yet.
+  const isFirstLaunch = profiles.length === 0
   return (
     <div className="wf-profile-gate">
       <div className="wf-profile-gate-inner">
-        <h1 className="wf-profile-gate-title">Who's watching?</h1>
-        <p className="wf-profile-gate-sub">Pick a profile to continue — your watch history and For You rail travel with it.</p>
+        <h1 className="wf-profile-gate-title">
+          {isFirstLaunch ? 'Welcome to WardoFlix' : "Who's watching?"}
+        </h1>
+        <p className="wf-profile-gate-sub">
+          {isFirstLaunch
+            ? 'Create a profile to begin — your watch history and For You rail travel with it.'
+            : 'Pick a profile to continue — your watch history and For You rail travel with it.'}
+        </p>
         <div className="wf-profile-picker-grid">
           {profiles.map((p) => (
             <div key={p.id} className="wf-profile-pick">
@@ -4337,12 +4347,17 @@ function App() {
       </main>
 
       {detailItem && (
-        <DetailModal
-          item={detailItem}
-          onClose={() => setDetailItem(null)}
-          onStream={(url, meta) => handleStream(url, meta)}
-          onSelectItem={(nextItem) => setDetailItem(nextItem)}
-        />
+        <ErrorBoundary
+          label="title details"
+          onReset={() => setDetailItem(null)}
+        >
+          <DetailModal
+            item={detailItem}
+            onClose={() => setDetailItem(null)}
+            onStream={(url, meta) => handleStream(url, meta)}
+            onSelectItem={(nextItem) => setDetailItem(nextItem)}
+          />
+        </ErrorBoundary>
       )}
 
       <UpdateAvailableModal />
@@ -4468,4 +4483,18 @@ function App() {
   )
 }
 
-export default App
+// v1.11.0 — wrap the whole app in a top-level error boundary. If any
+// component crashes outside the smaller DetailModal boundary (e.g. a
+// renderer bug in the browse grid), the user sees the "something
+// broke here" card with a retry button instead of a black screen.
+// Hitting retry remounts the entire App, so persisted state (profile,
+// resume positions, etc) survives.
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary label="WardoFlix app">
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default AppWithErrorBoundary

@@ -13,6 +13,22 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.0',
+    date: '2026-05-18',
+    title: '🏗️ Full-codebase audit pass — reliability, security, tests, CI',
+    items: [
+      'Nine-expert audit covering backend (server/index.js, ~3.3k lines), frontend (App.jsx + components, ~4.5k lines), Electron (main.js + build config), and tooling. Resulted in a phased work list — this release ships phases 1-7, with phase 8 (big StreamPage refactor) deferred to v1.12.0.',
+      'Reliability: single-instance lock so double-clicking the icon no longer spawns a second server that dies with EADDRINUSE. Graceful SIGTERM shutdown in the server cleans up every running ffmpeg + the WebTorrent client before the process exits — no more orphan ffmpeg.exe holding file handles open after quit. Atomic window-state writes (.tmp + rename) so a crash mid-save can\'t leave a torn preferences file. Race fix in the per-hash ffmpeg registry.',
+      'Security: added will-navigate handler in the main process — a renderer XSS that tried `document.location = "https://evil"` can no longer escape into a navigated BrowserWindow; the URL is sent to the user\'s default browser instead. Path-traversal guard on /api/external-url so the URL we hand to VLC/MPV can\'t be tricked into resolving onto a different endpoint.',
+      'Frontend: a top-level React error boundary catches uncaught render errors and shows a "try again" card instead of the black screen. Smaller boundary specifically around the title-details modal. AbortController on the details torrent fetch so rapid item-switching can\'t let an old request overwrite the new title\'s state.',
+      'Performance: PlayerControls timeupdate throttled from 30-60Hz down to 4Hz — saves ~3-5% CPU on transcoded streams where the host is already under heavy load. Same UI smoothness; the eye can\'t tell the difference.',
+      'UX: profile picker shows "Welcome to WardoFlix" on first launch instead of the misleading "Who\'s watching?". Player seek bar got a 16px-tall invisible hit-box (visible bar still 4px thin) and the visual bar enlarges to 10px on touchscreens.',
+      'Tests: vitest installed; 34 unit tests covering src/lib/util.js + src/lib/url.js (the lowest-risk-highest-payoff helpers — every stream URL goes through toAbsStreamUrl, every codec decision through upgradeStreamUrlForCodec).',
+      'CI: GitHub Actions workflow runs lint + test + production build + npm audit on every push and PR.',
+      'Storage: schema versioning scaffold + per-key corruption logging. Sets us up for the localStorage encryption migration that\'s next on the security roadmap.',
+    ],
+  },
+  {
     version: '1.10.0',
     date: '2026-05-18',
     title: '🎬 Playback overhaul — no more black screens or audio drift',

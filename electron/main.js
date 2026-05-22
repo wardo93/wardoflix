@@ -27,6 +27,31 @@ import { initDiscordPresence, setStreamingActivity, clearStreamingActivity, tear
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
 
+// ── v1.11.0 Single-instance lock ────────────────────────────────
+// Without this, double-clicking the launcher icon spawns a second
+// process that forks ANOTHER server on port 3000, which immediately
+// dies with EADDRINUSE — and on the way down sometimes corrupts the
+// shared cache files the first instance was reading. requestSingleInstanceLock
+// returns false to the second process; we quit it cleanly and forward
+// any arguments (deep-link URLs, file paths) to the first via the
+// 'second-instance' event below.
+const _gotLock = app.requestSingleInstanceLock()
+if (!_gotLock) {
+  app.quit()
+  // app.quit() is async; explicit process.exit guarantees we don't run
+  // any of the heavy initialisation below.
+  process.exit(0)
+}
+app.on('second-instance', (_event, _argv, _cwd) => {
+  // Bring the existing window to the foreground. argv would carry
+  // deep-link URLs once we add a wardoflix:// protocol handler;
+  // for now we just focus.
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
 // ── Logging ────────────────────────────────────────────────────
 // In packaged mode there's no attached console, so we tee everything
 // to %APPDATA%/WardoFlix/wardoflix.log for post-mortem debugging.
@@ -327,7 +352,17 @@ function saveWindowState(win) {
       isMaximized: win.isMaximized(),
       isFullScreen: win.isFullScreen(),
     }
-    fs.writeFileSync(WINDOW_STATE_PATH, JSON.stringify(payload), 'utf8')
+    // v1.11.0 — atomic write to prevent half-written window-state.json
+    // when the app is force-killed mid-write. Previously a crash during
+    // writeFileSync left a truncated file that loadWindowState() would
+    // fail-soft on (good — it falls back to defaults) BUT also wiped
+    // the user's persisted preferences. Now we write to a sibling .tmp
+    // file and rename — rename is atomic on every OS, so the .json
+    // either holds the previous good state or the new good state, never
+    // a torn one.
+    const tmpPath = WINDOW_STATE_PATH + '.tmp'
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), 'utf8')
+    fs.renameSync(tmpPath, WINDOW_STATE_PATH)
   } catch (e) {
     log('saveWindowState failed:', e?.message || e)
   }
@@ -427,6 +462,32 @@ function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  // v1.11.0 — block in-window navigation to anything other than our
+  // own renderer. setWindowOpenHandler above catches target=_blank /
+  // window.open() calls, but it does NOT stop a redirect / location.href
+  // / submitted form / drag-dropped link from replacing the renderer
+  // with a third-party page. If a renderer XSS slipped past the CSP
+  // and tried document.location = 'https://evil.com/<payload>' to get
+  // node-context-free access to whatever's reachable from a privileged
+  // BrowserWindow origin, this handler stops it cold by cancelling
+  // the navigation and routing the URL to the user's default browser.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let target
+    try { target = new URL(url) } catch { event.preventDefault(); return }
+    // Permitted internal targets:
+    //   - dev: http://localhost:5173/*  (Vite)
+    //   - packaged: file:// inside our app bundle
+    //   - both: about:blank (Electron transient)
+    const isDevHost = target.origin === 'http://localhost:5173'
+    const isFile = target.protocol === 'file:'
+    const isAbout = target.protocol === 'about:'
+    if (isDevHost || isFile || isAbout) return
+    event.preventDefault()
+    // External URLs go to the user's default browser, not our window.
+    // Same policy as setWindowOpenHandler above.
+    try { shell.openExternal(url) } catch {}
   })
 
   if (isDev) {

@@ -2968,7 +2968,11 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // candidate the ffmpeg process keeps reading from WebTorrent for up
   // to 5 more seconds (until req.close fires), hogging CPU and tripping
   // the torrent-cleanup. Forced-kill from /stream/dead is much cleaner.
-  if (!global.__ffmpegByHash) global.__ffmpegByHash = new Map()
+  // global.__ffmpegByHash is pre-allocated at module load (see end
+  // of file) so the lazy `if (!global.__ffmpegByHash)` race is gone.
+  // We still need the per-hash Set initialisation, but that's only a
+  // race within a single hash's first /remux — much narrower window
+  // and one we mitigate by initialising-then-adding atomically.
   if (!global.__ffmpegByHash.has(hash)) global.__ffmpegByHash.set(hash, new Set())
   global.__ffmpegByHash.get(hash).add(ffmpeg)
 
@@ -3169,8 +3173,24 @@ app.get('/api/external-url/:infoHash/*', async (req, res) => {
     return res.status(400).json({ error: 'Invalid infoHash' })
   }
   // Path comes in as URL-encoded; pass through as-is so /remux can
-  // re-encode internally. We don't have to validate — /remux does.
+  // re-encode internally.
   const path = req.params[0] || ''
+  // v1.11.0 — reject path-traversal attempts before constructing the
+  // URL we hand to an external player. Without this, a renderer
+  // exploit (or a bug in the way we build the path) could produce a
+  // URL like /remux/<hash>/foo/../../api/something — and the
+  // external player's HTTP fetch would normalise that to /api/...,
+  // hitting a non-/remux endpoint from a 127.0.0.1 origin (which
+  // bypasses our requireLocal control-plane gate). Block any path
+  // containing dot-dot in encoded or decoded form; also cap length.
+  if (path.length > 1024) {
+    return res.status(400).json({ error: 'path too long' })
+  }
+  // Match `..` literally, AND its url-encoded form `%2e%2e`. Doing
+  // the check on the raw value (before any decode) catches both.
+  if (/(?:^|[/\\])\.\.(?:[/\\]|$)|%2e%2e/i.test(path)) {
+    return res.status(400).json({ error: 'path traversal blocked' })
+  }
   const lan = getLanIp()
   // Use the LAN IP rather than localhost — this URL gets handed to
   // an EXTERNAL process (VLC/MPV) which on Windows runs in its own
@@ -3327,3 +3347,62 @@ apiServer.on('error', (err) => {
     console.error('API server error:', err.message)
   }
 })
+
+// ── v1.11.0 Graceful shutdown ──────────────────────────────────
+// Without this handler, the Electron parent's SIGTERM (sent during
+// `before-quit`) would terminate our event loop with active ffmpeg
+// children orphaned. On Windows those orphans hold file handles open
+// (the .tmp transcode pieces) and the next launch's cache prune
+// would fail with EBUSY. We also need to kill the WebTorrent server
+// so port STREAM_PORT releases cleanly — previously it hung on a few
+// peers' SSL handshakes and Windows kept the port in TIME_WAIT for
+// 2 min, occasionally racing with the next launch's bind.
+let __shuttingDown = false
+function gracefulShutdown(signal) {
+  if (__shuttingDown) return
+  __shuttingDown = true
+  console.log(`[shutdown] ${signal} received — cleaning up`)
+  // 1. Kill every live ffmpeg first. They hold the biggest resource
+  //    (CPU + disk read on transcode-output pipes).
+  try {
+    if (global.__ffmpegByHash instanceof Map) {
+      for (const [hash, procs] of global.__ffmpegByHash) {
+        for (const proc of procs) {
+          try { proc.kill('SIGTERM') } catch {}
+        }
+        console.log(`[shutdown] killed ${procs.size} ffmpeg(s) for ${hash.slice(0, 8)}`)
+      }
+      global.__ffmpegByHash.clear()
+    }
+  } catch (e) { console.error('[shutdown] ffmpeg cleanup failed:', e?.message) }
+  // 2. Destroy WebTorrent client (releases all pieces, closes peer
+  //    sockets, stops the announce loops). Wrapped in try/catch
+  //    because the lib occasionally throws on already-destroyed
+  //    torrents during rapid shutdown.
+  try { client?.destroy?.() } catch (e) { console.error('[shutdown] wt destroy failed:', e?.message) }
+  // 3. Close both HTTP servers. apiServer is the Express app on
+  //    API_PORT; wtServer is WebTorrent's stream server on STREAM_PORT.
+  try { apiServer.close() } catch {}
+  try { wtServer.close() } catch {}
+  // 4. Force exit after 3s if anything hung — Electron's before-quit
+  //    timeout is 2s, so 3s here means we never become the slow
+  //    process holding up shutdown.
+  setTimeout(() => {
+    console.log('[shutdown] timed out, forcing exit')
+    process.exit(0)
+  }, 3000).unref?.()
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+// fork()'d child processes can also receive 'disconnect' from the
+// parent IPC channel; treat that as a shutdown signal too.
+process.on('disconnect', () => gracefulShutdown('disconnect'))
+
+// ── v1.11.0 ffmpeg registry race fix ───────────────────────────
+// global.__ffmpegByHash was previously lazy-initialised inside the
+// /remux handler, which under concurrent first-time access (two
+// requests landing on the same hash before either had executed the
+// `if (!global.__ffmpegByHash) ...` block) could lose entries. By
+// pre-allocating here at module scope, every /remux request can
+// safely assume the Map exists.
+if (!global.__ffmpegByHash) global.__ffmpegByHash = new Map()

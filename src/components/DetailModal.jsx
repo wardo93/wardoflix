@@ -1,5 +1,5 @@
 // React + storage / util / overlay imports the modal needs at runtime.
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   isInLibrary, addToLibrary, removeFromLibrary,
   isWatched, markWatched, unmarkWatched,
@@ -90,9 +90,21 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
     return () => window.removeEventListener('keydown', handleKey)
   }, [item, onClose, showTrailer])
 
+  // v1.11.0 — abort controller stored on ref so loadTorrents can cancel
+  // any in-flight previous fetch. Without this, a rapid item-switch
+  // (user clicks one title, then another before the first /api/torrents
+  // call returns) would let the older request's resolution overwrite
+  // the newer item's torrents — manifesting as "wrong torrents for
+  // the title I clicked." Same class of bug as the profile-switch
+  // AbortController gap flagged in the audit.
+  const torrentsAbortRef = useRef(null)
+
   // Extracted so "retry" button can re-fire the exact same request.
   const loadTorrents = useCallback(() => {
     if (!item) return
+    try { torrentsAbortRef.current?.abort() } catch {}
+    const ctl = new AbortController()
+    torrentsAbortRef.current = ctl
     setTorrents([])
     setBySeason({})
     setSeasons([])
@@ -106,9 +118,10 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
     const params = new URLSearchParams({ title: item.title, type: itemType })
     if (item.date) params.set('year', item.date?.slice?.(0, 4) || '')
     if (item.id) params.set('tmdbId', String(item.id))
-    fetch(`/api/torrents?${params}`)
+    fetch(`/api/torrents?${params}`, { signal: ctl.signal })
       .then((r) => r.json().catch(() => ({ torrents: [] })))
       .then((data) => {
+        if (ctl.signal.aborted) return
         // Apply the user's per-title quality preference. The server
         // returns torrents sorted by seed count; we re-sort so the
         // preferred quality bubbles to the top, but ties (no
@@ -121,8 +134,14 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
         setSeasons(s)
         if (s.length && !s.includes(selectedSeason)) setSelectedSeason(String(s[0]))
       })
-      .catch(() => setTorrents([]))
-      .finally(() => setTorrentsLoading(false))
+      .catch((err) => {
+        // AbortError is expected on rapid switches — don't clobber state.
+        if (err?.name === 'AbortError') return
+        setTorrents([])
+      })
+      .finally(() => {
+        if (!ctl.signal.aborted) setTorrentsLoading(false)
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item])
 

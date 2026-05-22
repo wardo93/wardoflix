@@ -2,7 +2,7 @@
   "name": "wardoflix",
   "productName": "WardoFlix",
   "private": true,
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "WardoFlix — a premium streaming client",
   "author": "WardoFlix",
   "main": "electron/main.js",
@@ -15,6 +15,9 @@
     "server": "node server/index.js",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "electron": "electron .",
     "dist": "npm run build && electron-builder",
@@ -95,6 +98,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/coverage-v8": "^4.1.7",
     "concurrently": "^9.0.1",
     "electron": "^32.1.0",
     "electron-builder": "^25.1.8",
@@ -105,6 +109,7 @@
     "png-to-ico": "^3.0.1",
     "sharp": "^0.34.5",
     "vite": "^7.3.1",
+    "vitest": "^4.1.7",
     "wait-on": "^8.0.1"
   }
 }

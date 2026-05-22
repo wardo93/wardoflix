@@ -2,6 +2,14 @@ import { StrictMode, Component } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import { runStorageMigrations } from './lib/storage.js'
+
+// v1.11.0 — run any pending storage schema migrations before the
+// renderer mounts. Synchronous and idempotent; logs to console if
+// something goes wrong but never crashes. Must run before App.jsx
+// reads any storage key (which it does in useState initialisers,
+// hence why this lives BEFORE createRoot below).
+runStorageMigrations()
 
 // ── App error boundary ─────────────────────────────────────────
 // React errors during render bubble all the way to the root. Without

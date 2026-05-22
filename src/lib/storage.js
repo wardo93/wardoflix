@@ -7,6 +7,88 @@
 import { useState, useEffect } from 'react'
 import { uuid } from './util.js'
 
+// ── v1.11.0 schema versioning ─────────────────────────────────
+//
+// Bump this constant whenever the on-disk shape of any storage key
+// changes in a way that would break the loaders below. Each upgrade
+// path goes in `migrations` below and runs in version order.
+//
+// Current shape: see comments at each loadX() function. v1 is the
+// shape that shipped through v1.10.0 (pre-versioning).
+//
+// Why bother now? Once we encrypt history+resume via Electron
+// safeStorage (deferred P3 in SECURITY-ACTIONS.md), we'll need a
+// one-time migration that reads the old plaintext key, encrypts the
+// value, and rewrites under the same key. Without a version sentinel
+// we can't tell "old plaintext" from "new ciphertext" at read time.
+export const STORAGE_VERSION = 1
+const STORAGE_VERSION_KEY = 'wardoflix:storage-version'
+
+// Migration registry. Each migration runs once on app startup if the
+// stored version is below its `from`. Migrations are SYNCHRONOUS and
+// MUST be idempotent (running twice yields the same result) because
+// a crash mid-migration would otherwise leave the store inconsistent.
+const migrations = [
+  // Example future migration:
+  // {
+  //   from: 1, to: 2,
+  //   describe: 'Encrypt history+resume via safeStorage',
+  //   run: () => { ... },
+  // },
+]
+
+export function runStorageMigrations() {
+  try {
+    const stored = parseInt(localStorage.getItem(STORAGE_VERSION_KEY) || '1', 10)
+    if (!Number.isFinite(stored)) {
+      // Treat unparseable version as v1 (the pre-versioning baseline)
+      // rather than wiping — paranoid is safer than data-loss.
+      localStorage.setItem(STORAGE_VERSION_KEY, '1')
+      return
+    }
+    if (stored >= STORAGE_VERSION) return
+    let current = stored
+    for (const m of migrations) {
+      if (current === m.from) {
+        try {
+          // eslint-disable-next-line no-console
+          console.log(`[storage] migrating v${m.from} → v${m.to}: ${m.describe}`)
+          m.run()
+          current = m.to
+          localStorage.setItem(STORAGE_VERSION_KEY, String(current))
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(`[storage] migration v${m.from}→v${m.to} failed:`, e)
+          break // stop — running later migrations on partially-migrated data is risky
+        }
+      }
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[storage] migration top-level error:', e)
+  }
+}
+
+// Per-key corruption logger. Replaces the silent `catch { return [] }`
+// pattern that was data-loss-on-corruption: if ONE entry in the JSON
+// blob was malformed (e.g. a Unicode surrogate pair got split during
+// a localStorage quota retry), the whole array would parse-fail and
+// every loadProfiles() call would return empty — wiping the user's
+// profile list in the UI even though the data was still on disk.
+//
+// Now corrupt blobs get logged once per session and the loader
+// returns the safe fallback ([] / {}); the bad value stays on disk
+// so a manual repair is still possible.
+const _corruptKeysLoggedThisSession = new Set()
+function logCorruption(key, err) {
+  if (_corruptKeysLoggedThisSession.has(key)) return
+  _corruptKeysLoggedThisSession.add(key)
+  try {
+    // eslint-disable-next-line no-console
+    console.error(`[storage] corrupt blob at "${key}":`, err?.message || err)
+  } catch {}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // ── Profiles (localStorage) ─────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════
@@ -43,7 +125,11 @@ export function loadProfiles() {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed : []
-  } catch { return [] }
+  } catch (e) {
+    // v1.11.0 — log corruption instead of silently wiping.
+    logCorruption(PROFILES_KEY, e)
+    return []
+  }
 }
 
 export function saveProfiles(list) {
