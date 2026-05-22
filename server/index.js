@@ -2906,14 +2906,25 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     '-i', inputUrl,
     ...audioMap,
     ...videoEncoder,
-    // Constant-framerate output. -fps_mode cfr replaces deprecated
-    // -vsync cfr. ffmpeg duplicates/drops video frames as needed so
-    // the output framerate is constant — which is what the AAC encoder
-    // expects to stay in lockstep with. Without this, VFR sources
-    // (most anime, some web rips) produce a video stream whose
-    // average framerate is anything but constant, and the audio sink
-    // gradually pulls ahead of the video presentation clock.
-    '-fps_mode', 'cfr',
+    // Constant-framerate output. ffmpeg duplicates/drops video frames
+    // as needed so the output framerate is constant — which is what
+    // the AAC encoder expects to stay in lockstep with. Without this,
+    // VFR sources (most anime, some web rips) produce a video stream
+    // whose average framerate is anything but constant, and the audio
+    // sink gradually pulls ahead of the video presentation clock.
+    //
+    // v1.11.3 — using the legacy `-vsync cfr` spelling rather than
+    // the newer `-fps_mode cfr`. The @ffmpeg-installer/ffmpeg package
+    // ships an N-92722 build from 2018 (libavformat 58.24.101); the
+    // `-fps_mode` option didn't land until ffmpeg 5.1 in 2022. v1.10.0
+    // shipped with `-fps_mode` and broke every transcode for users
+    // running our bundled ffmpeg — the binary errored on arg-parse
+    // (`Unrecognized option 'fps_mode'`) before producing any output,
+    // so the player saw an empty response and surfaced
+    // MEDIA_ERR_SRC_NOT_SUPPORTED. `-vsync cfr` is the same behaviour
+    // and has been in ffmpeg since libavformat 53 (2010); it emits a
+    // deprecation warning on ffmpeg 5+ but still functions correctly.
+    '-vsync', 'cfr',
     // Audio resampling with async correction. This is the single most
     // important sync fix:
     //   async=1 — resample audio so output PTS matches the next AAC

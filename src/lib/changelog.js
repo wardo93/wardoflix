@@ -13,6 +13,16 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.11.3',
+    date: '2026-05-18',
+    title: '🎬 Playback hotfix — ffmpeg flag incompatibility was breaking every transcode',
+    items: [
+      'Every transcode-needing stream (10-bit HEVC, AV1, MKV anything) failed with "Source not supported (the browser refused the container/codec)" on every v1.10.0+ install. Root cause: my v1.10.0 audio-drift fix used `-fps_mode cfr`, which was only added in ffmpeg 5.1 (2022). The @ffmpeg-installer/ffmpeg package ships an N-92722 build from 2018. The bundled binary errored on arg-parse (`Unrecognized option \'fps_mode\'`) in 85ms, before any bytes hit the response — so the player saw an empty stream and surfaced MEDIA_ERR_SRC_NOT_SUPPORTED.',
+      'Fix: replaced `-fps_mode cfr` with `-vsync cfr` — same behaviour, in ffmpeg since 2010, works on every release. The audio-drift fix from v1.10.0 is restored; this is the form it should have been in from day one.',
+      'Why the smoke test missed it: the v1.11.2 publish gate boots the server and pings /api/health, but never actually spawns ffmpeg with our transcode args. A real fix would run a tiny end-to-end transcode of a test fixture. Tracked for v1.12.0.',
+    ],
+  },
+  {
     version: '1.11.2',
     date: '2026-05-18',
     title: '🚨 Hotfix — v1.11.1 was a broken release',
