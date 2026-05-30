@@ -21,6 +21,31 @@ export function upgradeStreamUrlForCodec(url, vcodec) {
   return `${swapped}${sep}transcode=1`
 }
 
+// v1.14.2 — merge a resume position into a /remux URL as ?t=<sec>.
+//
+// This is THE fix for the long-standing "Continue Watching restarts from
+// the beginning" bug. A /remux transcode is served non-byte-seekable
+// (Accept-Ranges: none), so resuming means restarting the transcode at
+// ?t=<sec> — NOT player.currentTime(). The bug that survived ~15 fix
+// attempts: several async code paths (codec upgrade, audio-track
+// re-issue) re-issue setSource a second or two AFTER playback starts,
+// each rebuilding the URL from scratch and DROPPING the ?t=. So resume
+// applied, then got clobbered → restart from 0. Funnelling every /remux
+// URL through this helper keeps ?t= attached no matter which path set
+// the source.
+//
+// No-op for: /stream URLs (byte-seekable; use currentTime instead),
+// a 0/absent resume, or a URL that already carries ?t= (don't override
+// an explicit seek). Preserves all other query params via URLSearchParams.
+export function withResumeTime(url, resumeSec) {
+  if (!resumeSec || resumeSec <= 0 || typeof url !== 'string' || !url.includes('/remux/')) return url
+  if (/[?&]t=/.test(url)) return url
+  const [base, q] = url.split('?')
+  const qs = new URLSearchParams(q || '')
+  qs.set('t', String(Math.floor(resumeSec)))
+  return `${base}?${qs.toString()}`
+}
+
 // Normalise any server-relative URL to an absolute one before it reaches
 // the <video> element. In packaged builds the document base is file://,
 // which resolves `/remux/…` to `file:///remux/…` — the browser then

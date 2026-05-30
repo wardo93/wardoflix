@@ -8,7 +8,7 @@ import {
   isMagnetLink, isDirectUrl, BROWSER_SAFE_VCODECS, formatAudioTrackLabel,
   seedHealth, seedHealthLabel, inferType, formatSpeed, formatTime, uuid,
 } from './lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl } from './lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime } from './lib/url.js'
 import {
   useDebounce, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
@@ -2244,6 +2244,22 @@ function App() {
   // wired through to PlayerControls, but the ref is kept so the
   // reload path has somewhere to record the offset for future use.
   const remuxTimeOffsetRef = useRef(0)
+  // v1.14.2 — THE resume fix. The saved resume position for the CURRENT
+  // stream, captured ONCE at handleStream() time (before any playback,
+  // so a 0:00-start timeupdate save can't corrupt it). Every /remux URL
+  // we hand the player carries this as ?t= so resume survives the
+  // background probes (audio-track pick, codec upgrade) that re-issue
+  // setSource a second or two after playback starts. Those re-issues
+  // were rebuilding the URL from scratch and dropping the ?t= — so
+  // resume applied, then got clobbered ~1-2s later, restarting from 0.
+  // That clobber (not the seek itself) is why every prior resume "fix"
+  // didn't stick. 0 = no resume / start from beginning.
+  const streamResumeTargetRef = useRef(0)
+  // Merge the captured resume target into a /remux URL as ?t=. Delegates
+  // to the unit-tested withResumeTime() in lib/url.js (test/url-resume).
+  const withResumeT = useCallback((url) => {
+    try { return withResumeTime(url, streamResumeTargetRef.current) } catch { return url }
+  }, [])
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
 
   // Discord Rich Presence — push the playing metadata up to the main
@@ -3282,6 +3298,19 @@ function App() {
     setSourceType(null)
     setDetailItem(null)
     setPlayingMetadata(metadata || null)
+    // v1.14.2 — capture the resume target NOW, once, from the saved
+    // position for this title. Read here (before playback starts) so a
+    // later timeupdate save can't overwrite it, and so all the async
+    // setSource paths below (initial, codec-upgrade, audio re-issue)
+    // can bake it into their /remux URLs via withResumeT(). Within-60s-
+    // of-end → treat as finished (start fresh). Duration comes from the
+    // saved entry's d (full source duration), reliable here.
+    try {
+      const rt = readResumePosition(metadata)
+      const entry = loadResumeMap()[resumeKey(metadata)]
+      const fullDur = entry && entry.d > 0 ? entry.d : 0
+      streamResumeTargetRef.current = (rt > 0 && (!fullDur || rt < fullDur - 60)) ? rt : 0
+    } catch { streamResumeTargetRef.current = 0 }
     setShowIntro(false)  // will be triggered when player emits canplay
     setStreamProgress(null)
     setAudioTracks([])
@@ -3368,7 +3397,9 @@ function App() {
           // allowed to walk the full /stream/ → /remux/ → /remux/&fresh
           // ladder if this new source misbehaves.
           remuxFallbackRef.current = 0
-          setSource(abs)
+          // v1.14.2 — bake the resume ?t= into the initial /remux URL so
+          // playback starts AT the resume point (no-op for /stream).
+          setSource(withResumeT(abs))
           setSourceType('url')
           setStreamWarning(data.warning || '')
           setStreamInfoHash(data.infoHash || null)
@@ -3607,7 +3638,12 @@ function App() {
                     try {
                       const urlObj = new URL((window.__API_BASE__ || '') + data.url)
                       urlObj.searchParams.set('audio', String(prefIdx))
-                      setSource(urlObj.toString())
+                      // v1.14.2 — preserve resume. This async re-issue
+                      // (fires after the /api/tracks probe resolves) used
+                      // to drop the ?t= and restart from 0 — a primary
+                      // cause of "Continue Watching restarts". withResumeT
+                      // re-merges it.
+                      setSource(withResumeT(urlObj.toString()))
                     } catch {}
                   }
                 }
@@ -3629,7 +3665,10 @@ function App() {
                   // user as the "codec" error we were trying to avoid.
                   const absUpgraded = (window.__API_BASE__ || '') + upgraded
                   setStreamBaseUrl(absUpgraded.split('?')[0])
-                  setSource(absUpgraded)
+                  // v1.14.2 — preserve resume. This /stream→/remux codec
+                  // upgrade fires after the probe and used to drop the
+                  // ?t=, restarting from 0. withResumeT re-merges it.
+                  setSource(withResumeT(absUpgraded))
                   setTimeout(() => setStreamWarning(''), 3500)
                 }
               })

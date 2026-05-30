@@ -19,7 +19,7 @@ import {
   formatTime,
   uuid,
 } from '../src/lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl } from '../src/lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime } from '../src/lib/url.js'
 
 describe('isMagnetLink', () => {
   it('accepts valid magnet URIs (case insensitive)', () => {
@@ -210,6 +210,46 @@ describe('upgradeStreamUrlForCodec', () => {
   it('handles null/empty URLs', () => {
     expect(upgradeStreamUrlForCodec(null, 'hevc')).toBe(null)
     expect(upgradeStreamUrlForCodec('', 'hevc')).toBe('')
+  })
+})
+
+describe('withResumeTime (the Continue-Watching resume fix)', () => {
+  const REMUX = 'http://localhost:3000/remux/abc/file.mkv?transcode=1'
+
+  it('adds ?t= to a /remux URL with a resume position', () => {
+    expect(withResumeTime(REMUX, 1800)).toBe('http://localhost:3000/remux/abc/file.mkv?transcode=1&t=1800')
+  })
+  it('preserves other params (transcode, audio) when adding t', () => {
+    const u = 'http://localhost:3000/remux/abc/file.mkv?transcode=1&audio=2'
+    const out = withResumeTime(u, 1800)
+    expect(out).toContain('transcode=1')
+    expect(out).toContain('audio=2')
+    expect(out).toContain('t=1800')
+  })
+  it('floors fractional seconds', () => {
+    expect(withResumeTime(REMUX, 1800.7)).toContain('t=1800')
+  })
+  it('does NOT touch /stream URLs (byte-seekable — uses currentTime)', () => {
+    const s = 'http://localhost:3000/stream/abc/file.mp4'
+    expect(withResumeTime(s, 1800)).toBe(s)
+  })
+  it('does NOT override an existing ?t= (an explicit seek wins)', () => {
+    const u = 'http://localhost:3000/remux/abc/file.mkv?transcode=1&t=600'
+    expect(withResumeTime(u, 1800)).toBe(u)
+  })
+  it('no-ops for zero / negative / missing resume', () => {
+    expect(withResumeTime(REMUX, 0)).toBe(REMUX)
+    expect(withResumeTime(REMUX, -5)).toBe(REMUX)
+    expect(withResumeTime(REMUX, null)).toBe(REMUX)
+    expect(withResumeTime(REMUX, undefined)).toBe(REMUX)
+  })
+  it('handles a /remux URL with no existing query string', () => {
+    expect(withResumeTime('http://localhost:3000/remux/abc/file.mkv', 90))
+      .toBe('http://localhost:3000/remux/abc/file.mkv?t=90')
+  })
+  it('handles non-string input', () => {
+    expect(withResumeTime(null, 1800)).toBe(null)
+    expect(withResumeTime(undefined, 1800)).toBe(undefined)
   })
 })
 

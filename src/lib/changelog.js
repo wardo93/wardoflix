@@ -13,6 +13,16 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.2',
+    date: '2026-05-18',
+    title: '▶️ Continue Watching — the actual root cause (resume clobbered by background probes)',
+    items: [
+      'The real reason resume kept failing across many attempts: resume WAS being applied, then overwritten ~1-2 seconds later. Two background tasks that run after playback starts (auto-picking your preferred audio track, and the codec-compatibility upgrade) each rebuilt the stream URL from scratch and silently dropped the resume position — so the transcode restarted from 0. Every earlier fix targeted the seek itself; none survived this later overwrite.',
+      'Fix: the resume position is now captured once when you press play and re-attached to every version of the stream URL the player receives (via a single tested helper), so no background task can drop it. Verified with unit tests covering exactly the overwrite cases that were breaking it.',
+      'Why this was uniquely stubborn vs. something like Stremio: Stremio direct-plays a seekable file, so resume is basically free. WardoFlix has to transcode most content (browsers can\'t play HEVC/MKV), and a live transcode isn\'t seekable — so resuming means restarting the transcode at your timestamp, and several independent code paths were each rebuilding that URL and losing the timestamp.',
+    ],
+  },
+  {
     version: '1.14.1',
     date: '2026-05-18',
     title: '▶️ Fixed Continue Watching restarting from the beginning',
