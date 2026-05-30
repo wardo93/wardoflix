@@ -9,7 +9,7 @@ import path from 'path'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import WebTorrent from 'webtorrent'
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+import ffmpegStatic from 'ffmpeg-static'
 import { hasPathTraversal } from './lib/path-safety.js'
 import { buildFfmpegArgs } from './lib/ffmpeg-args.js'
 import { isLoopback } from './lib/net.js'
@@ -23,13 +23,21 @@ try {
   APP_VERSION = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || '0.0.0'
 } catch {}
 
-// Electron packaging quirk: @ffmpeg-installer returns a path like
-//   .../app.asar/node_modules/@ffmpeg-installer/win32-x64/ffmpeg.exe
-// but we asarUnpack ffmpeg (binaries can't be executed from inside an
-// asar archive), so the real file lives under app.asar.unpacked.
-// Rewrite the path and verify it exists before we try to spawn it.
-let FFMPEG_PATH = ffmpegInstaller.path
-if (FFMPEG_PATH.includes('app.asar') && !FFMPEG_PATH.includes('app.asar.unpacked')) {
+// v1.14.0 — switched from @ffmpeg-installer (abandoned; pinned a 2018
+// N-92722 ffmpeg build) to ffmpeg-static, which ships a current ffmpeg
+// (6.1.1, 2023). The old binary was the most concrete supply-chain
+// exposure in the app: 7-year-old C parsing untrusted torrent media,
+// with many demuxer/decoder CVEs since 2018. The transcode smoke test
+// (test/transcode-smoke.test.js) validates the new binary against our
+// real /remux arg list before every release.
+//
+// ffmpeg-static's default export IS the binary path (a string), unlike
+// @ffmpeg-installer which exported { path }. Same Electron asar quirk
+// applies: the path resolves inside app.asar, but binaries can't be
+// executed from within an asar archive, so we asarUnpack ffmpeg-static
+// and rewrite the path to app.asar.unpacked.
+let FFMPEG_PATH = typeof ffmpegStatic === 'string' ? ffmpegStatic : (ffmpegStatic?.path || ffmpegStatic?.default || '')
+if (FFMPEG_PATH && FFMPEG_PATH.includes('app.asar') && !FFMPEG_PATH.includes('app.asar.unpacked')) {
   FFMPEG_PATH = FFMPEG_PATH.replace(/app\.asar([\\/])/g, 'app.asar.unpacked$1')
 }
 try {

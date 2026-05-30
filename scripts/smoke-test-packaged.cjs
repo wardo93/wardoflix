@@ -93,6 +93,30 @@ async function smokeTest(context) {
     return
   }
 
+  // v1.14.0 — verify the ffmpeg binary actually made it into the
+  // packaged app.asar.unpacked. /api/health (checked below) does NOT
+  // spawn ffmpeg, so a mis-packaged binary would pass the health gate
+  // yet leave every transcode broken for users — a silent failure
+  // exactly like the ones this whole safety net exists to prevent.
+  // After switching @ffmpeg-installer → ffmpeg-static this guard makes
+  // sure the asarUnpack glob is right and the binary is present +
+  // executable.
+  const unpackedRoot = path.join(outDir, 'win-unpacked', 'resources', 'app.asar.unpacked', 'node_modules', 'ffmpeg-static')
+  const ffName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const ffPath = path.join(unpackedRoot, ffName)
+  if (!fs.existsSync(ffPath)) {
+    console.error(`[smoke] FAIL: bundled ffmpeg not found at ${ffPath}`)
+    console.error('[smoke] The transcode pipeline would be broken for every user. Check build.asarUnpack includes node_modules/ffmpeg-static/**/*')
+    throw new Error('packaged ffmpeg binary missing')
+  }
+  try {
+    const v = require('child_process').execFileSync(ffPath, ['-version'], { encoding: 'utf8' }).split('\n')[0]
+    console.log(`[smoke] bundled ffmpeg present + runnable: ${v}`)
+  } catch (e) {
+    console.error(`[smoke] FAIL: bundled ffmpeg present but not executable: ${e.message}`)
+    throw new Error('packaged ffmpeg not executable')
+  }
+
   console.log(`[smoke] booting packaged installer at ${exePath} (timeout ${TIMEOUT_MS}ms)`)
 
   // Kill anything currently listening on 3000 so the test instance can

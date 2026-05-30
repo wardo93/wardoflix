@@ -31,7 +31,10 @@ const require = createRequire(import.meta.url)
 
 let FFMPEG_PATH = null
 try {
-  FFMPEG_PATH = require('@ffmpeg-installer/ffmpeg').path
+  // v1.14.0 — resolve the same binary the server uses (ffmpeg-static,
+  // current ffmpeg 6.x). Default export is the path string.
+  const ff = require('ffmpeg-static')
+  FFMPEG_PATH = typeof ff === 'string' ? ff : (ff?.path || ff?.default || null)
 } catch {
   FFMPEG_PATH = null
 }
