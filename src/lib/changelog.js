@@ -13,6 +13,18 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.0',
+    date: '2026-05-18',
+    title: '🔧 Dependency + ffmpeg modernization, server hardening (audit phase 5)',
+    items: [
+      'Modernized the bundled ffmpeg: it was a 2018 build (7 years old) parsing untrusted torrent media on every transcode — the single biggest security exposure in the app. Now ships ffmpeg 6.1.1 (2023). Validated by the transcode smoke test running the real /remux args through the new binary before release.',
+      'Cleared every safely-fixable dependency CVE: path-to-regexp (ReDoS), @xmldom/xmldom (XML injection), ws (memory disclosure — the most relevant since it\'s the torrent peer transport), express/qs/body-parser DoS patches. webtorrent deliberately kept at 2.8.5 (npm\'s only "fix" was a nonsensical downgrade to 0.7.3 that would gut the torrent engine).',
+      'Hardened the release gate: the packaged smoke test now verifies the ffmpeg binary is actually present + runnable in the build before publishing — /api/health doesn\'t exercise ffmpeg, so a mis-bundled binary would otherwise pass the gate while silently breaking every transcode.',
+      'Internal: extracted the server\'s pure "routing brain" (file picking, codec detection, magnet validation, torrent-title matching, subtitle conversion) into tested modules — 31 new tests covering logic that was previously untested and drives every play decision. Test count: 103 (was 50 three releases ago).',
+      'No user-facing behavior change — this release is about security and reliability under the hood. The bigger internal refactors (splitting the giant App.jsx player code) are intentionally deferred until they have test coverage, rather than risked blind.',
+    ],
+  },
+  {
     version: '1.13.0',
     date: '2026-05-18',
     title: '🎛️ Player + UX + accessibility pass (audit phases 3-4)',
