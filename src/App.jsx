@@ -2260,6 +2260,22 @@ function App() {
   const withResumeT = useCallback((url) => {
     try { return withResumeTime(url, streamResumeTargetRef.current) } catch { return url }
   }, [])
+  // v1.14.3 — diagnostic logger for the resume path. Posts to
+  // /api/debug-log, which the server writes into wardoflix.log as
+  // [renderer:resume] — the same channel the peer-watchdog uses. This
+  // exists because resume has been "fixed" repeatedly without me being
+  // able to observe it; this makes the next reproduction unambiguous
+  // (was a position captured? did the handler fire? what did it read?
+  // did it bake ?t= or seek or do nothing?). Cheap; safe to leave in.
+  const rlog = useCallback((msg) => {
+    try {
+      fetch((window.__API_BASE__ || '') + '/api/debug-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: 'resume', msg: String(msg).slice(0, 300) }),
+      }).catch(() => {})
+    } catch {}
+  }, [])
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
 
   // Discord Rich Presence — push the playing metadata up to the main
@@ -2688,7 +2704,9 @@ function App() {
       resumeApplied = true
       const meta = playingMetadataRef.current
       const t = readResumePosition(meta)
-      if (!(t > 0)) return
+      const srcTail = (source || '').slice(-48)
+      rlog(`loadedmetadata key=${resumeKey(meta)} read=${t} src=…${srcTail}`)
+      if (!(t > 0)) { rlog('-> no saved position; starting at 0'); return }
       // v1.14.1 — RESUME BUG FIX. The old code always did
       // player.currentTime(t). That works for a direct /stream URL
       // (byte-seekable), but a /remux transcode is served with
@@ -2707,13 +2725,13 @@ function App() {
       if (isRemux) {
         // If the URL already carries ?t= (e.g. set elsewhere), the
         // content already starts at the resume point — nothing to do.
-        if (/[?&]t=/.test(source)) return
+        if (/[?&]t=/.test(source)) { rlog('-> /remux already has ?t=; no-op (already at resume point)'); return }
         // Within 60s of the end → treat as finished, start from 0.
         // At this point source is /remux with no ?t=, so duration() is
         // the full-from-0 length, making the comparison meaningful.
         try {
           const d = player.duration()
-          if (isFinite(d) && d > 0 && t >= d - 60) return
+          if (isFinite(d) && d > 0 && t >= d - 60) { rlog(`-> within 60s of end (t=${t} d=${d}); start fresh`); return }
         } catch {}
         const base = source.split('?')[0]
         const qs = new URLSearchParams(source.split('?')[1] || '')
@@ -2723,6 +2741,7 @@ function App() {
         // seekRemuxAware uses).
         seekReloadPendingRef.current = true
         setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
+        rlog(`-> /remux rebuild to ?t=${Math.floor(t)} (setSource)`)
         setSource(`${base}?${qs.toString()}`)
         return
       }
@@ -2731,8 +2750,9 @@ function App() {
         const d = player.duration()
         // Don't resume if we're within 60s of the end — treat as finished.
         if (!isFinite(d) || d <= 0 || t < d - 60) {
+          rlog(`-> /stream currentTime(${t})`)
           player.currentTime(t)
-        }
+        } else { rlog(`-> /stream within 60s of end; start fresh`) }
       } catch {}
     })
     // Throttle resume-save to once every ~5 seconds.
@@ -3310,7 +3330,8 @@ function App() {
       const entry = loadResumeMap()[resumeKey(metadata)]
       const fullDur = entry && entry.d > 0 ? entry.d : 0
       streamResumeTargetRef.current = (rt > 0 && (!fullDur || rt < fullDur - 60)) ? rt : 0
-    } catch { streamResumeTargetRef.current = 0 }
+      rlog(`capture key=${resumeKey(metadata)} read=${rt} dur=${fullDur} target=${streamResumeTargetRef.current}`)
+    } catch (e) { streamResumeTargetRef.current = 0; rlog(`capture FAILED ${e?.message}`) }
     setShowIntro(false)  // will be triggered when player emits canplay
     setStreamProgress(null)
     setAudioTracks([])

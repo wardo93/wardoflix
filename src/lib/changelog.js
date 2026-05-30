@@ -13,6 +13,15 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.3',
+    date: '2026-05-18',
+    title: '🔎 Resume diagnostics + dead-source clarity',
+    items: [
+      'Keeps the v1.14.2 resume fix and adds a precise trace of the resume decision to the log, so the exact behavior can finally be observed instead of guessed at. (The log already showed resume working on a healthy source — jumping to and playing from 96 seconds in — but some failures that look like "restarted from the beginning" are actually a different problem.)',
+      'That different problem: when a torrent is nearly dead (e.g. 3 peers at ~1.5 KB/s), the transcoder gets no data and produces nothing, so the video never starts — which looks exactly like "stuck at 0". This isn\'t resume; it\'s a dead source. A clearer "this source is too slow, trying another" experience is the next improvement.',
+    ],
+  },
+  {
     version: '1.14.2',
     date: '2026-05-18',
     title: '▶️ Continue Watching — the actual root cause (resume clobbered by background probes)',
