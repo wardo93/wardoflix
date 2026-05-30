@@ -13,6 +13,13 @@ import ffmpegStatic from 'ffmpeg-static'
 import { hasPathTraversal } from './lib/path-safety.js'
 import { buildFfmpegArgs } from './lib/ffmpeg-args.js'
 import { isLoopback } from './lib/net.js'
+import {
+  PREFERRED_EXTENSIONS, hasVideoExt, parseSeasonEpisode, normalizeForMatch,
+  torrentMatchesTitle, formatBytes, pickBestVideoFile, mkvWarning,
+  needsTranscodeFromName, parseInfoHash, parseInfoHashFromError, pickEpisodeFile,
+  parseVideoCodec, isWellFormedMagnet,
+} from './lib/media-format.js'
+import { srtToVtt, shiftVttTimestamps } from './lib/subtitles.js'
 
 // Read app version from package.json so /api/health can report it and
 // the client can pin a build identifier to its topbar.
@@ -48,7 +55,8 @@ try {
 }
 
 // ── Config ──────────────────────────────────────────────────────
-const PREFERRED_EXTENSIONS = ['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.avi', '.ogv', '.flv', '.wmv', '.ts', '.m2ts']
+// PREFERRED_EXTENSIONS + the media-format helpers now live in
+// server/lib/media-format.js (imported above) so they're unit-tested.
 const STREAM_PORT = 3001
 const API_PORT = 3000
 
@@ -1014,35 +1022,8 @@ app.get('/api/episodes/:tmdbId/:season', async (req, res) => {
 })
 
 // ── Torrent search ──────────────────────────────────────────────
-function parseSeasonEpisode(filename) {
-  const m = (filename || '').match(/S(\d{1,4})E(\d{1,4})/i) || (filename || '').match(/(\d{1,2})x(\d{1,4})/i)
-  return m ? { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) } : null
-}
-
-// Normalize a title or torrent name for fuzzy comparison.
-// Lowercases, replaces all separators/punctuation with spaces, collapses whitespace.
-function normalizeForMatch(s) {
-  return (s || '')
-    .toLowerCase()
-    .replace(/['`’]/g, '')
-    .replace(/[._\-+()[\]{}:!,?&]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-// Strict: torrent name must START with the show/movie title (after normalization).
-// Filters out results where the title appears as a substring elsewhere
-// (e.g. "Welcome to Wrexham ... Down to the Wire" when searching "The Wire").
-function torrentMatchesTitle(torrentName, title) {
-  if (!torrentName || !title) return false
-  const t = normalizeForMatch(torrentName)
-  const q = normalizeForMatch(title)
-  if (!q || !t.startsWith(q)) return false
-  const after = q.length
-  // Char after must be end of string or whitespace (avoid partial-word matches)
-  if (after < t.length && t[after] !== ' ') return false
-  return true
-}
+// parseSeasonEpisode, normalizeForMatch, torrentMatchesTitle, formatBytes
+// moved to server/lib/media-format.js (imported at top).
 
 function normalizeTorrent(t, title, type) {
   let magnet = t.magnet_url || (t.url?.startsWith('magnet:') ? t.url : null) ||
@@ -1062,14 +1043,6 @@ function normalizeTorrent(t, title, type) {
     magnet,
     ...(se && { season: se.season, episode: se.episode }),
   }
-}
-
-function formatBytes(bytes) {
-  if (!bytes || isNaN(bytes)) return ''
-  const b = Number(bytes)
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`
-  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`
-  return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 // In-memory cache for torrent search results.
@@ -1866,27 +1839,7 @@ const LANG_NAMES = {
   jpn:'Japanese',chi:'Chinese',hin:'Hindi',ind:'Indonesian',per:'Persian',tha:'Thai',vie:'Vietnamese',
 }
 
-function srtToVtt(srt) {
-  // Convert SRT → WebVTT
-  return 'WEBVTT\n\n' + srt
-    .replace(/\r\n/g, '\n')
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2') // comma → dot in timestamps
-}
-
-// Shift every WebVTT timestamp by `offsetSec` seconds (may be negative).
-// Used to fix subs that are out of sync with the video.
-function shiftVttTimestamps(vtt, offsetSec) {
-  if (!offsetSec || isNaN(offsetSec)) return vtt
-  return vtt.replace(/(\d{1,2}):(\d{2}):(\d{2})\.(\d{3})/g, (_, h, m, s, ms) => {
-    const total = parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000 + offsetSec
-    if (total < 0) return '00:00:00.000'
-    const hh = Math.floor(total / 3600)
-    const mm = Math.floor((total % 3600) / 60)
-    const ss = Math.floor(total % 60)
-    const mmm = Math.round((total - Math.floor(total)) * 1000)
-    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(mmm).padStart(3, '0')}`
-  })
-}
+// srtToVtt + shiftVttTimestamps moved to server/lib/subtitles.js.
 
 app.get('/api/subtitles', async (req, res) => {
   const { tmdbId, type, season, episode } = req.query
@@ -2124,86 +2077,9 @@ app.get('/api/subtitles/proxy', async (req, res) => {
 })
 
 // ── Video file helpers ──────────────────────────────────────────
-function hasVideoExt(str) {
-  return PREFERRED_EXTENSIONS.some((ext) => (str || '').toLowerCase().replace(/\\/g, '/').endsWith(ext))
-}
-
-function pickBestVideoFile(files) {
-  // Only consider files > 10MB with video extensions (skip promo images/nfos)
-  const MIN_SIZE = 10 * 1024 * 1024
-  const videoFiles = (files || [])
-    .filter((f) => (f.length || 0) > MIN_SIZE && (hasVideoExt(f.name) || hasVideoExt(f.path)))
-  if (!videoFiles.length) return null
-  // Prefer by extension priority (mp4 > mkv etc)
-  for (const ext of PREFERRED_EXTENSIONS) {
-    const found = videoFiles.find((f) => {
-      const n = (f.name || '').toLowerCase()
-      const p = (f.path || '').toLowerCase().replace(/\\/g, '/')
-      return n.endsWith(ext) || p.endsWith(ext)
-    })
-    if (found) return found
-  }
-  // Fall back to largest video file
-  return [...videoFiles].sort((a, b) => (b.length || 0) - (a.length || 0))[0]
-}
-
-function mkvWarning(file) {
-  if (!file) return null
-  const n = (file.name || '').toLowerCase()
-  if (n.endsWith('.mkv') || (file.path || '').toLowerCase().endsWith('.mkv')) {
-    return 'MKV often has no sound in browser (AC3/DTS codec). Try 720p/MP4 or use VLC.'
-  }
-  return null
-}
-
-// Release-group naming conventions almost always declare the codec and bit
-// depth right in the filename (e.g. "Supernatural.S01E01.1080p.x265-RARBG"
-// or "Movie.2024.2160p.10bit.HEVC"). When we spot one of these tags we can
-// route straight to /remux?transcode=1 instead of serving /stream/ and
-// bouncing off a guaranteed MEDIA_ERR_DECODE. Zero-config, filename-only;
-// if the tag is absent we fall through to the normal direct-stream path.
-function needsTranscodeFromName(file) {
-  if (!file) return false
-  const n = ((file.name || '') + ' ' + (file.path || '')).toLowerCase()
-  // Word-ish boundaries around each tag so "x264" doesn't match "x265".
-  // Added `main10` / `10b` / `10-bit` / `dovi` / `dv` to catch HDR/Dolby
-  // Vision releases that don't have the obvious `10bit` substring — these
-  // used to slip through to /stream and fail with a decode error. VP9
-  // stays in the heuristic even though the codec itself is browser-safe
-  // because VP9-in-MKV still needs container repackaging, which means
-  // /remux with -c:v copy.
-  return /(^|[^a-z0-9])(x[\s._-]?265|h[\s._-]?265|hevc|main10|10[\s._-]?bit|10b|av1|vp9|dovi|dv|hdr10)([^a-z0-9]|$)/.test(n)
-}
-
-function parseInfoHash(magnet) {
-  const m = String(magnet).match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i)
-  return m ? m[1].toLowerCase() : null
-}
-
-function parseInfoHashFromError(errMsg) {
-  const m = String(errMsg || '').match(/([a-fA-F0-9]{40})/)
-  return m ? m[1].toLowerCase() : null
-}
-
-// Given an episode pack, pick the file that matches the user's requested
-// season/episode. Falls back to null if we can't resolve unambiguously —
-// the caller then defaults to pickBestVideoFile's largest-video heuristic,
-// which is correct for single-title packs but wrong for season packs.
-function pickEpisodeFile(files, season, episode) {
-  if (!files || !Number.isFinite(season) || !Number.isFinite(episode)) return null
-  const s = Number(season), e = Number(episode)
-  const candidates = files.filter(f => (f.length || 0) > 10 * 1024 * 1024 && (hasVideoExt(f.name) || hasVideoExt(f.path)))
-  // Accept any of the common episode-tag formats in the filename:
-  //   S01E01 / s1e1 / 1x01 / 01x01 / season1ep1
-  const match = candidates.find(f => {
-    const name = (f.name || '').toLowerCase()
-    if (new RegExp(`\\bs0*${s}[ _.-]?e0*${e}\\b`, 'i').test(name)) return true
-    if (new RegExp(`\\b0*${s}\\s*x\\s*0*${e}\\b`, 'i').test(name)) return true
-    if (new RegExp(`season\\s*0*${s}.{0,3}ep(?:isode)?\\s*0*${e}\\b`, 'i').test(name)) return true
-    return false
-  })
-  return match || null
-}
+// hasVideoExt, pickBestVideoFile, mkvWarning, needsTranscodeFromName,
+// parseInfoHash, parseInfoHashFromError, pickEpisodeFile moved to
+// server/lib/media-format.js (imported at top, unit-tested).
 
 function getStreamFromTorrent(t, opts = {}) {
   // Priority chain for picking the right file out of the torrent:
@@ -2252,23 +2128,8 @@ function getStreamFromTorrent(t, opts = {}) {
 }
 
 // ── Stream endpoint ─────────────────────────────────────────────
-// v1.9.0 — Schema-validated magnet input.
-// A valid BitTorrent magnet looks like:
-//   magnet:?xt=urn:btih:<40-hex-OR-32-base32>&dn=...&tr=...&...
-// We enforce the prefix + a parseable info-hash, plus a hard length
-// cap so a malicious caller can't OOM us with a 100MB "magnet".
-// Length 8KB is way more than any real magnet needs (typical: ~500B
-// to ~3KB with our tracker list appended).
-function isWellFormedMagnet(raw) {
-  if (typeof raw !== 'string') return false
-  const m = raw.trim()
-  if (m.length < 60 || m.length > 8192) return false
-  if (!m.toLowerCase().startsWith('magnet:?')) return false
-  // Info-hash is mandatory and must be hex(40) or base32(32).
-  const hashMatch = m.match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})\b/)
-  return Boolean(hashMatch)
-}
-
+// v1.9.0 — Schema-validated magnet input (isWellFormedMagnet now in
+// server/lib/media-format.js, imported at top + unit-tested).
 app.post('/api/stream', (req, res) => {
   let { magnet, fileIdx, season, episode } = req.body || {}
   if (!isWellFormedMagnet(magnet)) {
@@ -2704,10 +2565,7 @@ const BROWSER_SAFE_VCODECS = new Set(['h264', 'avc1'])
 // codec string lowercased (e.g. "hevc", "h264", "vp9") or null if absent.
 // Handles parenthesised language tags ("Stream #0:0(eng):") AND bracketed
 // stream-id annotations ("Stream #0:0 [0x1]:") which some ffmpeg builds emit.
-function parseVideoCodec(stderr) {
-  const m = stderr.match(/Stream #0:\d+(?:\s*[(\[][^)\]]*[)\]])*\s*:\s*Video:\s*([a-z0-9_]+)/i)
-  return m ? m[1].toLowerCase() : null
-}
+// parseVideoCodec moved to server/lib/media-format.js (imported at top).
 
 async function probeDuration(videoFile) {
   // Feed 5MB of header into ffprobe and return { duration, vcodec }.
