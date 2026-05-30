@@ -8,7 +8,7 @@
 
 import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { PosterCard } from './PosterCard.jsx'
-import { useEdgeHoverScroll, useHorizontalRowGestures } from '../lib/hooks.js'
+import { useHorizontalRowGestures } from '../lib/hooks.js'
 
 // v1.7.9: wrapped in React.memo at the bottom of this file. Same
 // rationale as PosterCard — the home page has 12+ rows on screen
@@ -20,7 +20,9 @@ function ContentRowInner({ title, url, type, onSelect, showRanking = false }) {
   const rowRef = useRef(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
-  useEdgeHoverScroll(rowRef)
+  // v1.13.0 — removed a duplicate useEdgeHoverScroll(rowRef) here;
+  // useHorizontalRowGestures (below) already includes it. Two calls
+  // meant two rAF scroll loops per row.
 
   useEffect(() => {
     let cancelled = false

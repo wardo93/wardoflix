@@ -13,6 +13,21 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.13.0',
+    date: '2026-05-18',
+    title: '🎛️ Player + UX + accessibility pass (audit phases 3-4)',
+    items: [
+      'Seek bar now works on touchscreens. The whole player (seek + volume) was mouse-only — the touch-friendly CSS landed a while ago but the actual drag handlers never did. Rewrote both sliders with Pointer Events, so tap-and-drag works with a finger, a pen, or a mouse.',
+      'Fixed the seek bar jumping after a mid-stream re-seek: during a drag, the thumb preview was double-counting the remux time offset, so on a transcoded stream the playhead leapt ahead while you were dragging. The preview now tracks your finger/cursor exactly.',
+      'Hero "Play" button actually plays now (for movies) — it auto-starts the best source instead of just opening the details modal like "More Info" did. (Series still open to let you pick an episode.)',
+      'Performance: every browse row was running two competing scroll-animation loops (a duplicate hook wiring). Halved the per-frame scroll work across the whole home screen.',
+      'Connecting screen now has a Cancel button — no more being stuck on "Finding peers…" with no way out if a source is cold.',
+      'Server-down banner: if the backend becomes unreachable, you now get a clear red banner explaining it instead of pages mysteriously going blank (the thing that made For You look broken).',
+      'Accessibility: the title-details modal now traps keyboard focus and announces itself as a dialog; the logo is keyboard-operable as the "home" control; and the startup intro (animation + that loud sound sting) now respects your OS "reduce motion" setting — reduced-motion users get a silent, near-instant fade.',
+      'Reconciled a video-codec mismatch between client and server (VP9 was treated as native by one and transcode-needed by the other, which could black-screen VP9 titles on one path). Both now agree.',
+    ],
+  },
+  {
     version: '1.12.0',
     date: '2026-05-18',
     title: '🛡️ Release safety net + critical server reliability (6-expert audit, phases 0-1)',

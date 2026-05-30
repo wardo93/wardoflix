@@ -108,13 +108,23 @@ export function WardoFlixIntro({ onComplete, quote, fullscreenTarget }) {
   useEffect(() => { fullscreenTargetRef.current = fullscreenTarget }, [fullscreenTarget])
 
   useEffect(() => {
+    // v1.13.0 — respect prefers-reduced-motion. Vestibular-sensitive
+    // users get NO audio sting and a near-instant fade instead of the
+    // 4.5s animated sequence + synthesized "tudum". The loud autoplay
+    // sound on every launch was the worst offender (an unexpected,
+    // un-opt-out-able noise); skipping the AudioContext entirely also
+    // means no sound at all in reduced-motion mode.
+    const reduceMotion = typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
     // Play the intro sound once on mount. Audio context creation has to
     // happen in a click/event handler in some browsers, but we're inside
     // a component that's mounted *because* the user clicked play, so the
     // page has user gesture.
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext
-      if (Ctx) {
+      if (Ctx && !reduceMotion) {
         const ctx = new Ctx()
         audioRef.current = ctx
         const now = ctx.currentTime
@@ -273,8 +283,10 @@ export function WardoFlixIntro({ onComplete, quote, fullscreenTarget }) {
 
     // Total intro length = fadeTimer + 800ms fade out. Bumped to accommodate
     // the longer cinematic sting (impact now lands at 1.1s instead of 0.35s).
-    const fadeTimer = setTimeout(() => setPhase('fading'), 3700)
-    const doneTimer = setTimeout(() => onCompleteRef.current?.(), 4500)
+    // v1.13.0 — reduced-motion collapses this to a quick fade so the
+    // user isn't held on the logo for 4.5s with motion they didn't want.
+    const fadeTimer = setTimeout(() => setPhase('fading'), reduceMotion ? 250 : 3700)
+    const doneTimer = setTimeout(() => onCompleteRef.current?.(), reduceMotion ? 500 : 4500)
 
     // The intro overlay covers the video with z-index: 50, which hid the
     // PlayerControls' fullscreen button. Rather than poke pointer-events

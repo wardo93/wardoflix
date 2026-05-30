@@ -197,55 +197,73 @@ export function PlayerControls({
     p.paused() ? p.play() : p.pause()
   }, [playerRef])
 
-  const seekTo = useCallback((e) => {
-    const p = playerRef.current
-    const bar = seekBarRef.current
-    if (!p || p.isDisposed() || !bar) return
-    const rect = bar.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    const d = getSafeDuration()
-    if (d > 0) doSeek(pct * d)
-    showControls()
-  }, [playerRef, getSafeDuration, showControls])
-
+  // v1.13.0 — Pointer Events (not mouse events) so the seek bar works
+  // on touchscreens/tablets too (the app ships as a PWA). One handler
+  // covers mouse, touch, and pen. Also fixes the remux-offset bug: the
+  // drag preview now writes the LOCAL-axis currentTime so the thumb
+  // lands at the right ABSOLUTE spot.
   const startSeek = useCallback((e) => {
     seekingRef.current = true
     const bar = seekBarRef.current
     if (!bar) return
     const p = playerRef.current
     const d = getSafeDuration()
+    const offset = remuxTimeOffset || 0
+    // Capture the pointer so a drag that leaves the bar still tracks.
+    try { bar.setPointerCapture?.(e.pointerId) } catch {}
 
-    const onMove = (ev) => {
+    const posToPct = (clientX) => {
       const rect = bar.getBoundingClientRect()
-      const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
-      setCurrentTime(pct * d)
+      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
     }
+    // Preview: the bar renders progress = (currentTime + offset)/duration,
+    // so to show the cursor at absolute time `pct*d` we must store
+    // `pct*d - offset` in the local-axis currentTime. The old code stored
+    // `pct*d` (absolute) which then had `offset` added AGAIN at render,
+    // making the thumb jump ahead by `offset` during the drag whenever
+    // a /remux re-seek had set an offset (the reported "seekbar jumps").
+    const preview = (clientX) => {
+      const pct = posToPct(clientX)
+      setCurrentTime(Math.max(0, pct * d - offset))
+    }
+    const onMove = (ev) => preview(ev.clientX)
     const onUp = (ev) => {
       seekingRef.current = false
-      const rect = bar.getBoundingClientRect()
-      const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
-      if (p && !p.isDisposed() && d > 0) doSeek(pct * d)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
+      const pct = posToPct(ev.clientX)
+      if (p && !p.isDisposed() && d > 0) doSeek(pct * d) // doSeek/onSeek expects ABSOLUTE
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
     }
+    preview(e.clientX) // immediate feedback on press/tap
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+  }, [playerRef, getSafeDuration, remuxTimeOffset])
 
-    // Immediate feedback
-    const rect = bar.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    setCurrentTime(pct * d)
-
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [playerRef, getSafeDuration])
-
-  const changeVolume = useCallback((e) => {
+  // v1.13.0 — Pointer Events so the volume slider supports touch drag,
+  // not just a mouse click. Press-and-drag sets volume continuously;
+  // a tap sets it once.
+  const startVolume = useCallback((e) => {
     const p = playerRef.current
     const bar = volumeBarRef.current
     if (!p || p.isDisposed() || !bar) return
-    const rect = bar.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    p.volume(pct)
-    p.muted(pct === 0)
+    try { bar.setPointerCapture?.(e.pointerId) } catch {}
+    const apply = (clientX) => {
+      const rect = bar.getBoundingClientRect()
+      const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+      try { p.volume(pct); p.muted(pct === 0) } catch {}
+    }
+    const onMove = (ev) => apply(ev.clientX)
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+    }
+    apply(e.clientX)
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
     showControls()
   }, [playerRef, showControls])
 
@@ -485,7 +503,7 @@ export function PlayerControls({
         <div
           className="cc-seek"
           ref={seekBarRef}
-          onMouseDown={startSeek}
+          onPointerDown={startSeek}
           onMouseMove={(e) => {
             const bar = seekBarRef.current
             if (!bar) return
@@ -573,7 +591,7 @@ export function PlayerControls({
                   <svg viewBox="0 0 24 24" width="20" height="20" fill="white"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M15.54 8.46a5 5 0 010 7.07" fill="none" stroke="white" strokeWidth="1.5"/>{volume > 0.5 && <path d="M19.07 4.93a10 10 0 010 14.14" fill="none" stroke="white" strokeWidth="1.5"/>}</svg>
                 )}
               </button>
-              <div className="cc-volume-slider" ref={volumeBarRef} onClick={changeVolume}>
+              <div className="cc-volume-slider" ref={volumeBarRef} onPointerDown={startVolume}>
                 <div className="cc-volume-level" style={{ width: `${muted ? 0 : volume * 100}%` }} />
               </div>
             </div>

@@ -2676,13 +2676,21 @@ setInterval(pruneRemuxMeta, 30 * 60 * 1000).unref?.()
 // Codecs Chromium/Electron's <video> can decode natively. Everything else
 // (hevc/h265, vp9 in MKV, av1, mpeg4, wmv3…) has to go through libx264 in
 // the /remux pipeline or the browser throws MEDIA_ERR_DECODE on first keyframe.
-// Codecs Chromium (and therefore every Electron we ship) can decode
-// natively — no ffmpeg hop needed. VP9 is universal in Chromium 88+
-// (our runtime) and plays fine from an MKV container once the browser
-// unwraps it. HEVC is intentionally NOT here — even though some platforms
-// support it, detection is OS-dependent and falling through to transcode
-// is safer than betting on hardware decode that might not exist.
-const BROWSER_SAFE_VCODECS = new Set(['h264', 'avc1', 'vp9'])
+// Codecs we treat as "play natively, no ffmpeg transcode needed".
+//
+// v1.13.0 — MUST stay in sync with the client's BROWSER_SAFE_VCODECS in
+// src/lib/url.js / src/lib/util.js. They had diverged: the server
+// included 'vp9' but the client did not. That meant the client always
+// upgraded VP9 /stream URLs to /remux?transcode=1 (forcing transcode),
+// while the server, on a bare /remux hit, would -c:v copy the VP9 —
+// and VP9 stream-copied into a fragmented MP4 is NOT reliably playable
+// in Chromium (VP9 normally lives in WebM). So a VP9 title could play
+// on one path and black-screen on the other. Reconciled by removing
+// 'vp9' here: the server now transcodes VP9 to H.264 like the client
+// already expected. VP9 torrents are rare (mostly WebM/YouTube rips),
+// so the extra CPU is a fine trade for guaranteed playback.
+// HEVC is intentionally absent — OS-dependent decode, safer to transcode.
+const BROWSER_SAFE_VCODECS = new Set(['h264', 'avc1'])
 
 // Pull "Stream #0:N: Video: codec_name" out of ffmpeg stderr. Returns the
 // codec string lowercased (e.g. "hevc", "h264", "vp9") or null if absent.

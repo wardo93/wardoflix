@@ -10,7 +10,7 @@ import {
 } from './lib/util.js'
 import { upgradeStreamUrlForCodec, toAbsStreamUrl } from './lib/url.js'
 import {
-  useDebounce, useEdgeHoverScroll, useWheelHorizontalScroll, useHorizontalRowGestures, useFocusTrap,
+  useDebounce, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
 import { ToastHost, ShortcutsOverlay, DebugOverlay, toast } from './components/Overlays.jsx'
 import { ErrorBoundary } from './components/ErrorBoundary.jsx'
@@ -76,7 +76,13 @@ function HeroBanner({ items, type, onSelect, onStream }) {
         )}
         {item.overview && <p className="hero-overview">{item.overview.slice(0, 200)}{item.overview.length > 200 ? '...' : ''}</p>}
         <div className="hero-actions">
-          <button className="btn btn-hero" onClick={() => onSelect({ ...item, title: item.title || item.name, poster: item.poster_path, date: item.release_date || item.first_air_date, rating: item.vote_average, type })}>
+          {/* v1.13.0 — "Play" now actually plays (for movies): it opens
+              the detail modal with __autoPlay so the best source
+              auto-starts once torrents resolve, instead of just opening
+              the modal identically to "More Info" (the old behaviour
+              made the play triangle a lie). TV titles still open the
+              modal so the user can pick an episode. */}
+          <button className="btn btn-hero" onClick={() => onSelect({ ...item, title: item.title || item.name, poster: item.poster_path, date: item.release_date || item.first_air_date, rating: item.vote_average, type, __autoPlay: true })}>
             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
             Play
           </button>
@@ -178,7 +184,11 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
   const rowRef = useRef(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
-  useEdgeHoverScroll(rowRef)
+  // v1.13.0 — removed a duplicate useEdgeHoverScroll(rowRef) here.
+  // useHorizontalRowGestures (below) ALREADY includes edge-hover-scroll,
+  // so calling both wired two competing requestAnimationFrame scroll
+  // loops + two mousemove listeners onto the same row — across 12+ home
+  // rows that's real wasted per-frame work and fighting scroll writes.
 
   const updateScrollState = useCallback(() => {
     const el = rowRef.current
@@ -195,7 +205,7 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
     return () => el.removeEventListener('scroll', updateScrollState)
   }, [history, updateScrollState])
 
-  useHorizontalRowGestures(rowRef, history)
+  useHorizontalRowGestures(rowRef)
 
   const scroll = (dir) => {
     const el = rowRef.current
@@ -4067,7 +4077,18 @@ function App() {
         />
       )}
       <header className="topbar">
-        <h1 className="logo" onClick={() => setTab('browse')}>
+        {/* v1.13.0 — logo is the only "go home" control since the tabs
+            were removed, so it must be keyboard-operable. role=button +
+            tabindex + Enter/Space handler make it reachable without a
+            mouse (it stays an <h1> for the page heading semantics). */}
+        <h1
+          className="logo"
+          role="button"
+          tabIndex={0}
+          aria-label="WardoFlix — go to home"
+          onClick={() => { handleClear(); setTab('browse') }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClear(); setTab('browse') } }}
+        >
           <span className="logo-mark">W</span>
           <span>Wardo<span className="logo-flix">Flix</span></span>
         </h1>
@@ -4170,6 +4191,23 @@ function App() {
           </button>
         </div>
       </header>
+
+      {/* v1.13.0 — global server-down banner. We already poll
+          /api/health every 30s into `serverHealthy`; before this the
+          only signal was a tiny red dot on the version pill (hidden on
+          narrow widths). When the backend is unreachable, every row
+          silently vanishes and search returns "no results" — the user
+          had no idea the SERVER was the problem. This banner makes it
+          explicit. Only shows on a confirmed-false (not the initial
+          null/unknown), so it doesn't flash on a slow first boot. */}
+      {serverHealthy === false && (
+        <div className="server-down-banner" role="alert">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><circle cx="12" cy="16" r="0.6" fill="currentColor" />
+          </svg>
+          <span>Lost connection to the WardoFlix server — browsing and playback won’t work until it’s back. Retrying…</span>
+        </div>
+      )}
 
       <main className="main">
         {tab === 'browse' && (
@@ -4417,6 +4455,16 @@ function App() {
                         return 'Finding peers in the swarm…'
                       })()}
                     </p>
+                    {/* v1.13.0 — Cancel out of a slow/cold connect. Before
+                        this the connecting card was a dead-end: no Esc
+                        (PlayerControls isn't mounted yet — there's no
+                        <video>), no button, nothing. The user was stuck
+                        watching "Finding peers…" for up to the full
+                        watchdog timeout. handleClear aborts the in-flight
+                        fetches and returns to Browse. */}
+                    <button className="btn btn-ghost player-connecting-cancel" onClick={handleClear}>
+                      Cancel
+                    </button>
                   </div>
                 </div>
               ) : (

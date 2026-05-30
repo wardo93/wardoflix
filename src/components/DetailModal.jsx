@@ -7,11 +7,20 @@ import {
   resumeKey, loadResumeMap,
 } from '../lib/storage.js'
 import { inferType, seedHealth, seedHealthLabel } from '../lib/util.js'
+import { useFocusTrap } from '../lib/hooks.js'
 import { toast } from './Overlays.jsx'
 
 // ── Detail Modal ────────────────────────────────────────────────
 export function DetailModal({ item, onClose, onStream, onSelectItem }) {
   const [input, setInput] = useState('')
+  // v1.13.0 — focus trap + dialog ARIA on the app's most-used modal.
+  // Every other modal-ish surface (StillWatchingPrompt) already traps
+  // focus, but the title-detail modal — opened on every poster click —
+  // didn't: Tab walked straight out into the dimmed grid behind it and
+  // screen readers never announced a dialog. modalRef + useFocusTrap
+  // fix both.
+  const modalRef = useRef(null)
+  useFocusTrap(modalRef, !!item)
   const [torrents, setTorrents] = useState([])
   const [bySeason, setBySeason] = useState({})
   const [seasons, setSeasons] = useState([])
@@ -225,6 +234,24 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
     }
   }
 
+  // v1.13.0 — hero "Play" auto-start. When the modal is opened with
+  // item.__autoPlay (from the hero Play button), auto-fire the best
+  // source as soon as the torrent list resolves — for MOVIES only.
+  // TV needs an episode choice, so an autoPlay'd series just shows its
+  // details (the user picks an episode). Guarded by a ref so it fires
+  // exactly once even though torrents/torrentsLoading change a few times.
+  const autoPlayedRef = useRef(false)
+  useEffect(() => {
+    if (!item?.__autoPlay || isTv) return
+    if (autoPlayedRef.current) return
+    if (torrentsLoading) return
+    if (!torrents.length) return // no source found — leave the modal open so the user sees that
+    autoPlayedRef.current = true
+    // torrents[0] is already the best pick (quality-pref + seed sorted).
+    handleStream(torrents[0].magnet)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item, isTv, torrentsLoading, torrents])
+
   // On-demand search for a single episode — fired when the user clicks an
   // episode that didn't have a torrent in the initial sweep. Stremio-style:
   // list every episode always, find the stream when clicked. Retries once
@@ -362,7 +389,14 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
   if (!item) return null
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={item.title || item.name || 'Title details'}
+        onClick={(e) => e.stopPropagation()}
+      >
         {item.backdrop && (
           <div className="modal-hero">
             <img src={item.backdrop} alt="" />
