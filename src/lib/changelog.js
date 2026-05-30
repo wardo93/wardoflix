@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.1',
+    date: '2026-05-18',
+    title: '▶️ Fixed Continue Watching restarting from the beginning',
+    items: [
+      'Continue Watching (and resuming any partially-watched title) was restarting from 0 instead of picking up where you left off — even though the little "resume" dot correctly showed where that was.',
+      'Cause: resuming seeked the player with currentTime(savedPosition). That works for direct streams, but transcoded titles (HEVC/MKV — i.e. most of them) are served as a non-seekable live transcode, so the seek silently failed and the intro\'s snap-back then landed you back at 0.',
+      'Fix: resuming a transcoded title now restarts the transcode AT the saved position (the same mechanism the seek bar already uses), so it genuinely starts where you left off and the seekbar shows the correct time. Direct streams still use a normal seek.',
+      'Also keeps the "if you were within a minute of the end, start fresh" behavior so resume never drops you straight into the credits.',
+    ],
+  },
+  {
     version: '1.14.0',
     date: '2026-05-18',
     title: '🔧 Dependency + ffmpeg modernization, server hardening (audit phase 5)',

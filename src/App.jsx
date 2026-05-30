@@ -2672,15 +2672,52 @@ function App() {
       resumeApplied = true
       const meta = playingMetadataRef.current
       const t = readResumePosition(meta)
-      if (t > 0) {
+      if (!(t > 0)) return
+      // v1.14.1 — RESUME BUG FIX. The old code always did
+      // player.currentTime(t). That works for a direct /stream URL
+      // (byte-seekable), but a /remux transcode is served with
+      // Accept-Ranges: none — it is NOT byte-seekable. Seeking to t
+      // when only the start is buffered silently fails (no bytes
+      // there), currentTime stays ~0, and then the intro's snap-back
+      // captures ~0 → playback restarts from the beginning. That's the
+      // "Continue Watching just starts over" bug, and it hit every
+      // transcoded (HEVC/MKV) title — i.e. most of them.
+      //
+      // The correct way to resume a /remux stream is the same as
+      // seeking it: restart the transcode at ?t=<resume> so the server
+      // produces bytes from that point. remuxTimeOffset is derived from
+      // the URL's ?t=, so the seekbar shows the right absolute time.
+      const isRemux = source.includes('/remux/')
+      if (isRemux) {
+        // If the URL already carries ?t= (e.g. set elsewhere), the
+        // content already starts at the resume point — nothing to do.
+        if (/[?&]t=/.test(source)) return
+        // Within 60s of the end → treat as finished, start from 0.
+        // At this point source is /remux with no ?t=, so duration() is
+        // the full-from-0 length, making the comparison meaningful.
         try {
           const d = player.duration()
-          // Don't resume if we're within 60s of the end — treat as finished.
-          if (!isFinite(d) || d <= 0 || t < d - 60) {
-            player.currentTime(t)
-          }
+          if (isFinite(d) && d > 0 && t >= d - 60) return
         } catch {}
+        const base = source.split('?')[0]
+        const qs = new URLSearchParams(source.split('?')[1] || '')
+        qs.set('t', String(Math.floor(t)))
+        // Guard the decode-error ladder during the swap window so it
+        // doesn't wipe our fresh ?t= and restart from 0 (same guard
+        // seekRemuxAware uses).
+        seekReloadPendingRef.current = true
+        setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
+        setSource(`${base}?${qs.toString()}`)
+        return
       }
+      // Direct /stream (byte-seekable): a native seek works.
+      try {
+        const d = player.duration()
+        // Don't resume if we're within 60s of the end — treat as finished.
+        if (!isFinite(d) || d <= 0 || t < d - 60) {
+          player.currentTime(t)
+        }
+      } catch {}
     })
     // Throttle resume-save to once every ~5 seconds.
     let lastResumeSave = 0
