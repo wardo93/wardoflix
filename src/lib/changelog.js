@@ -13,6 +13,21 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.12.0',
+    date: '2026-05-18',
+    title: '🛡️ Release safety net + critical server reliability (6-expert audit, phases 0-1)',
+    items: [
+      'Six experts reviewed the whole codebase. The #1 finding: the last 4 releases shipped BROKEN because the publish gate only checked /api/health (which never touches ffmpeg or the module graph that kept breaking). This release builds the net that stops that.',
+      'Transcode smoke test: the real ffmpeg arg list is now extracted into a testable builder, and the test suite spawns the actual bundled ffmpeg against a tiny generated video to assert it produces output. This is the test that would have caught the v1.11.3 disaster (every transcode broken by an incompatible flag). It runs before every build — a broken arg list can no longer reach the installer.',
+      'Server-boot test: CI now actually boots the server and polls /api/health on every push — catches the v1.11.1 class (server crashes on import) in seconds, before a release is ever attempted.',
+      'Regression tests for every recently-shipped bug: v1.11.3 (ffmpeg flag), v1.11.6 (rate-limit loopback), v1.10.0 (audio-drift flags), plus the existing path-traversal coverage. 72 tests now (was 50).',
+      'Fixed the subtitle 502 storm: when a subtitle CDN was down, the player hammered it 40+ times in seconds (once per track, per retry). Now a failed host goes into a 60s cooldown that short-circuits the rest of the burst, and successful subtitle fetches are cached — so re-selecting a track is instant instead of another network round-trip.',
+      'Server crash guards: a single unhandled promise rejection used to be able to kill the server mid-watch (Node terminates on unhandled rejection by default). Now logged and survived — playback keeps going.',
+      'Dropped -hwaccel auto from the transcode pipeline: on the bundled 2018 ffmpeg it could silently produce a 0-byte transcode (same symptom as the -fps_mode bug). Software decode with ultrafast preset is the safe, fast default.',
+      'A timed-out stream now destroys its dead torrent instead of leaving it announcing to trackers for 2 hours — cycling through dead fallback sources no longer leaks background bandwidth.',
+    ],
+  },
+  {
     version: '1.11.6',
     date: '2026-05-18',
     title: '⚡ Hotfix — the app was rate-limiting itself',

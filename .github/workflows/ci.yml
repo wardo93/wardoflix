@@ -65,8 +65,29 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
+      # vitest suite includes the end-to-end transcode smoke test, which
+      # spawns the bundled ffmpeg with the real /remux arg list — this is
+      # the gate that would have caught v1.11.3.
       - name: Run vitest
         run: npm test
+
+  boot:
+    name: Server boots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      # Actually boots server/index.js and polls /api/health. Catches the
+      # v1.11.1 class (server crashes on import — a runtime module
+      # resolution error that `node --check` and `vite build` cannot see)
+      # on every push, long before a release is attempted.
+      - name: Boot the server and poll /api/health
+        run: npm run test:boot
 
   build:
     name: Production build

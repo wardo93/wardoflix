@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url'
 import WebTorrent from 'webtorrent'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 import { hasPathTraversal } from './lib/path-safety.js'
+import { buildFfmpegArgs } from './lib/ffmpeg-args.js'
+import { isLoopback } from './lib/net.js'
 
 // Read app version from package.json so /api/health can report it and
 // the client can pin a build identifier to its topbar.
@@ -399,18 +401,8 @@ app.use((req, res, next) => {
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 1000
 const _rateBuckets = new Map() // ip -> number[] of request timestamps
-// Loopback IP patterns. node's req.ip can return:
-//   "::1"           — IPv6 loopback
-//   "127.0.0.1"     — IPv4 loopback
-//   "::ffff:127.0.0.1" — IPv4-mapped IPv6 loopback (common on Windows)
-function isLoopback(ip) {
-  if (!ip) return false
-  return ip === '::1'
-      || ip === '127.0.0.1'
-      || ip.startsWith('127.')
-      || ip === '::ffff:127.0.0.1'
-      || ip.startsWith('::ffff:127.')
-}
+// isLoopback lives in server/lib/net.js (imported at top) so it can be
+// unit-tested — see test/net.test.js. v1.11.6 regression fence.
 function rateLimitMiddleware(req, res, next) {
   // Skip the data-plane — TVs may pull /stream in many small range
   // requests and we don't want to throttle them.
@@ -2005,6 +1997,34 @@ function isSubtitleHostAllowed(host) {
 const SUBTITLE_MAX_BYTES = 1024 * 1024 // 1 MB
 const SUBTITLE_FETCH_TIMEOUT_MS = 8000
 
+// v1.12.0 — small VTT response cache + host cooldown for the subtitle
+// proxy. Fixes the 502 storm: the client renders one <track> per
+// language and re-hits the proxy on every track selection / retry, so
+// when a subtitle CDN (e.g. subs5.strem.io) is down, a single title
+// could fire 40+ proxy requests in seconds, each re-502'ing against a
+// dead host (observed in a real user log). Now: a cooling host short-
+// circuits to 503 without a network round-trip, a successful fetch is
+// cached, and the same url|offset is served from memory on repeat.
+const SUBTITLE_VTT_CACHE = new Map() // key `${url}|${offset}` -> { vtt, at }
+const SUBTITLE_VTT_CACHE_TTL = 30 * 60 * 1000
+const SUBTITLE_VTT_CACHE_MAX = 120
+const SUBTITLE_HOST_COOLDOWN_MS = 60 * 1000 // shorter than the 10min indexer cooldown — subs recover fast and users want them soon
+function subtitleCacheGet(key) {
+  const e = SUBTITLE_VTT_CACHE.get(key)
+  if (!e) return null
+  if (Date.now() - e.at > SUBTITLE_VTT_CACHE_TTL) { SUBTITLE_VTT_CACHE.delete(key); return null }
+  return e.vtt
+}
+function subtitleCacheSet(key, vtt) {
+  SUBTITLE_VTT_CACHE.set(key, { vtt, at: Date.now() })
+  if (SUBTITLE_VTT_CACHE.size > SUBTITLE_VTT_CACHE_MAX) {
+    // Drop the oldest ~10% in insertion order (Map preserves it).
+    const drop = Math.ceil(SUBTITLE_VTT_CACHE_MAX * 0.1)
+    let i = 0
+    for (const k of SUBTITLE_VTT_CACHE.keys()) { SUBTITLE_VTT_CACHE.delete(k); if (++i >= drop) break }
+  }
+}
+
 app.get('/api/subtitles/proxy', async (req, res) => {
   const { url, offset } = req.query
   if (!url || typeof url !== 'string' || url.length > 2048) {
@@ -2017,6 +2037,20 @@ app.get('/api/subtitles/proxy', async (req, res) => {
     console.warn(`[subs/proxy] refused host=${parsed.host}`)
     return res.status(403).json({ error: 'Host not allowed' })
   }
+  // Serve from the VTT cache if we've already fetched this exact
+  // url+offset recently — avoids re-hitting the CDN on track re-select.
+  const cacheKey = `${url}|${offset || 0}`
+  const cached = subtitleCacheGet(cacheKey)
+  if (cached != null) {
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8')
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    return res.send(cached)
+  }
+  // If this host is in cooldown (recent failure), don't even try — fail
+  // fast with 503 so the client doesn't keep us hammering a dead CDN.
+  if (isHostCooling(url)) {
+    return res.status(503).json({ error: 'Subtitle host temporarily unavailable — try again shortly' })
+  }
   // Abort-controller-based timeout so the request can't hang the
   // server. Combined with the size check below, a hostile mirror
   // can't keep us connected indefinitely.
@@ -2024,7 +2058,11 @@ app.get('/api/subtitles/proxy', async (req, res) => {
   const timer = setTimeout(() => ctrl.abort(), SUBTITLE_FETCH_TIMEOUT_MS)
   try {
     const r = await fetch(url, { ...FETCH_OPTS, signal: ctrl.signal })
-    if (!r.ok) return res.status(502).json({ error: 'Fetch failed' })
+    if (!r.ok) {
+      // Cool the host so the next 39 requests in this burst short-circuit.
+      try { markHostRateLimited(parsed.host, SUBTITLE_HOST_COOLDOWN_MS) } catch {}
+      return res.status(502).json({ error: 'Fetch failed' })
+    }
     // Reject upstream content-length over the cap WITHOUT reading
     // the body — for hosts that advertise honestly, this stops
     // bandwidth waste before it starts.
@@ -2060,10 +2098,14 @@ app.get('/api/subtitles/proxy', async (req, res) => {
     let vtt = text.trimStart().startsWith('WEBVTT') ? text : srtToVtt(text)
     const offsetSec = parseFloat(offset)
     if (offsetSec) vtt = shiftVttTimestamps(vtt, offsetSec)
+    subtitleCacheSet(cacheKey, vtt)
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8')
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.send(vtt)
   } catch (err) {
+    // Timeout or network error — cool the host so a burst of retries
+    // doesn't keep hammering it.
+    try { markHostRateLimited(parsed.host, SUBTITLE_HOST_COOLDOWN_MS) } catch {}
     if (err?.name === 'AbortError') {
       return res.status(504).json({ error: 'Subtitle fetch timed out' })
     }
@@ -2236,13 +2278,34 @@ app.post('/api/stream', (req, res) => {
   magnet = addTrackers(magnet.trim())
 
   let responded = false
+  // Track a torrent THIS request freshly added (vs. one already in the
+  // session for a title currently being watched). On a 504 timeout we
+  // destroy a freshly-added-but-never-ready torrent so it doesn't sit
+  // announcing to trackers for the full 2h TORRENT_TTL. Without this,
+  // cycling a 3–4 candidate fallback chain orphans several dead torrents
+  // per failed play, each burning bandwidth in the background. We only
+  // destroy our own freshly-added torrent — never a pre-existing one.
+  let freshlyAdded = null
   // 25s budget per torrent — long enough for a healthy swarm to hand us
   // a file list, short enough that the client's fallback chain can cycle
   // through 3–4 candidates in under two minutes if they're all dead.
   // The old 120s budget left the user staring at a spinner forever when
   // the very first torrent had zero seeds.
   const timeoutId = setTimeout(() => {
-    if (!responded) { responded = true; res.status(504).json({ error: 'Timeout connecting to peers. The torrent may have no seeders — try a different source.' }) }
+    if (!responded) {
+      responded = true
+      // Reap the dead torrent we added for this request.
+      try {
+        if (freshlyAdded && !freshlyAdded.ready) {
+          const key = String(freshlyAdded.infoHash || '').toLowerCase()
+          const tmr = torrentTimers.get(key)
+          if (tmr) { clearTimeout(tmr); torrentTimers.delete(key) }
+          freshlyAdded.destroy({ destroyStore: false })
+          console.log(`[/api/stream] 504 — destroyed dead torrent ${key.slice(0, 8)} (never reached ready)`)
+        }
+      } catch (e) { console.warn('[/api/stream] 504 cleanup failed:', e?.message) }
+      res.status(504).json({ error: 'Timeout connecting to peers. The torrent may have no seeders — try a different source.' })
+    }
   }, 25000)
 
   const send = (status, data) => {
@@ -2330,6 +2393,7 @@ app.post('/api/stream', (req, res) => {
       // Persist to disk cache so repeat viewings reuse files.
       // WebTorrent creates a subdir per infoHash inside CACHE_DIR.
       torrent = client.add(magnet, { path: CACHE_DIR })
+      freshlyAdded = torrent  // so the 504 path can reap it if it never readies
       pruneCache()
     } catch (err) {
       if (/duplicate/i.test(err.message)) {
@@ -2802,16 +2866,6 @@ app.get('/remux/:infoHash/*', async (req, res) => {
   // tiny subset of subtitle codecs (mov_text) and attempting to carry
   // ASS/SSA/PGS through silently breaks the container.
   const audioIdx = req.query.audio != null ? parseInt(req.query.audio) : null
-  // Drop the `?` optional marker on the audio map so a missing/corrupt
-  // audio stream 0 fails the ffmpeg spawn instead of silently emitting
-  // video-only output. The client will see the error and can switch
-  // tracks via the audio selector. Keep the `?` on the user-picked
-  // non-default index though — if they explicitly chose a track that
-  // later went missing (torrent re-select, etc.), fall through to the
-  // default rather than failing.
-  const audioMap = audioIdx != null && !isNaN(audioIdx) && audioIdx >= 0
-    ? ['-map', '0:v:0', '-map', `0:a:${audioIdx}?`, '-sn']
-    : ['-map', '0:v:0', '-map', '0:a:0', '-sn']
 
   // Use WebTorrent's own HTTP server as ffmpeg's input. Unlike stdin,
   // an HTTP URL supports byte-range seeks — ffmpeg issues a Range request
@@ -2843,158 +2897,14 @@ app.get('/remux/:infoHash/*', async (req, res) => {
     forceTranscode
     || (vcodecKnown && !BROWSER_SAFE_VCODECS.has(meta.vcodec))
     || !vcodecKnown
-  const videoEncoder = needsTranscode
-    ? [
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',   // minimise CPU + first-frame latency; size cost is fine for streaming
-        '-tune', 'zerolatency',   // no B-frames, smaller GOP — cuts startup from ~8s to ~1s
-        '-crf', '23',             // quality-equivalent to source for most 1080p content
-        '-pix_fmt', 'yuv420p',    // Safari/older Chromium refuse 10-bit; force 8-bit 4:2:0
-        // Pin H.264 profile + level explicitly. With just the preset/tune
-        // combo above, libx264 will pick profile High and the level based
-        // on resolution, which on 1080p content lands on 4.0/4.1. Most of
-        // the time Chromium accepts that, but every so often (empirically
-        // on certain HEVC sources — Peaky Blinders S01 x265 RARBG was the
-        // reproducer) the auto-picked settings produce a bitstream that
-        // Chromium parses then refuses with MEDIA_ERR_DECODE. Pinning
-        // `main` profile + level 4.0 (≤1080p @ ~20Mbit) gives us a well-
-        // tested Chromium-compatible baseline. Main (no CABAC-with-B-
-        // frames exotica) + zerolatency is what every streaming CDN on
-        // the planet serves; if Chromium can't play this, nothing will.
-        '-profile:v', 'main',
-        '-level:v', '4.0',
-      ]
-    : ['-c:v', 'copy']
 
-  // ffmpeg startup latency tuning. The previous defaults
-  // (-analyzeduration 10000000 -probesize 10000000) made ffmpeg buffer
-  // 10MB of input AND analyze 10 seconds of bitstream BEFORE writing
-  // a single byte to its output pipe. On a 2.5MB/s WebTorrent feed
-  // that's ~4s of input buffering plus the analysis time itself, on
-  // top of the libx264 encoder warming up. Net result: 10-15 seconds
-  // of black screen before the first frame appears, which made
-  // 10-bit HEVC sources (LotR, Avatar, etc.) feel "broken" even though
-  // they were transcoding correctly.
-  //
-  // Lowering to 1MB/1s gets ffmpeg producing output within ~1s of
-  // the first piece arriving from WebTorrent. If the format-detection
-  // is genuinely shaky on a particular source, ffmpeg will retry
-  // automatically — it doesn't hard-fail at probesize-exhausted, it
-  // just falls back to its built-in heuristics.
-  const ffmpegArgs = [
-    // Hardware-accelerated decode. -hwaccel auto lets ffmpeg pick the
-    // best available accelerator on the user's machine: NVDEC on
-    // NVIDIA, QSV on Intel, D3D11VA / DXVA2 as Windows fallbacks. For
-    // 10-bit HEVC at 1080p+ this is a 5-10× speedup over software
-    // decode and frees up the CPU for libx264 to encode faster. If
-    // hwaccel is unavailable for the specific codec, ffmpeg
-    // transparently falls back to software, so it's safe to leave on
-    // unconditionally.
-    //
-    // Threads N: libx264 with -preset ultrafast benefits from all
-    // available cores. Defaulting to 0 (auto) lets libx264 pick based
-    // on the host's logical CPU count; previous code accepted
-    // libx264's default which was conservative on Windows.
-    '-hwaccel', 'auto',
-    '-threads', '0',
-    ...(seekSec > 0 ? ['-ss', String(seekSec)] : []),
-    '-analyzeduration', '1000000',  // 1 second
-    '-probesize', '1000000',        // 1 MB
-    // Reconnect on transient read errors from WebTorrent's stream server
-    // (e.g. a piece gap when the swarm is still filling).
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    // ── v1.10.0 A/V SYNC FIX ──────────────────────────────────────
-    // The previous flag set was `+nobuffer+flush_packets+genpts`.
-    // `+genpts` discards source PTS and regenerates them from packet
-    // arrival order. Combined with re-encoded AAC (1024-sample frame
-    // boundaries that DON'T align with source audio packet boundaries)
-    // and libx264 output (which produces its OWN PTS via -tune
-    // zerolatency's small GOP), drift accumulated within ~30s on any
-    // VFR or oddly-muxed MKV: audio ran ~1s ahead of video. The user
-    // reported this as "show pretty much unwatchable".
-    //
-    // New flag set:
-    //   +discardcorrupt — drop corrupt packets without aborting the
-    //     whole stream. Better than +genpts at handling broken MKV
-    //     headers, which is what most "weird timestamp" sources are.
-    //   +igndts — ignore DTS errors on input (some MKV demuxers emit
-    //     monotonic-violating DTS that ffmpeg would otherwise crash
-    //     on). Keeps PTS intact so downstream sync logic works.
-    //   +nobuffer — same as before, low-latency.
-    // Removed +flush_packets — combined with -frag_duration 200000
-    // it was forcing fragment writes before the AAC encoder had
-    // produced a full audio frame, which itself caused minor sync
-    // hitches on slow-encoder hardware.
-    '-fflags', '+nobuffer+discardcorrupt+igndts',
-    '-i', inputUrl,
-    ...audioMap,
-    ...videoEncoder,
-    // Constant-framerate output. ffmpeg duplicates/drops video frames
-    // as needed so the output framerate is constant — which is what
-    // the AAC encoder expects to stay in lockstep with. Without this,
-    // VFR sources (most anime, some web rips) produce a video stream
-    // whose average framerate is anything but constant, and the audio
-    // sink gradually pulls ahead of the video presentation clock.
-    //
-    // v1.11.3 — using the legacy `-vsync cfr` spelling rather than
-    // the newer `-fps_mode cfr`. The @ffmpeg-installer/ffmpeg package
-    // ships an N-92722 build from 2018 (libavformat 58.24.101); the
-    // `-fps_mode` option didn't land until ffmpeg 5.1 in 2022. v1.10.0
-    // shipped with `-fps_mode` and broke every transcode for users
-    // running our bundled ffmpeg — the binary errored on arg-parse
-    // (`Unrecognized option 'fps_mode'`) before producing any output,
-    // so the player saw an empty response and surfaced
-    // MEDIA_ERR_SRC_NOT_SUPPORTED. `-vsync cfr` is the same behaviour
-    // and has been in ffmpeg since libavformat 53 (2010); it emits a
-    // deprecation warning on ffmpeg 5+ but still functions correctly.
-    '-vsync', 'cfr',
-    // Audio resampling with async correction. This is the single most
-    // important sync fix:
-    //   async=1 — resample audio so output PTS matches the next AAC
-    //     frame boundary, stretching/compressing audio by tiny amounts
-    //     to track the video timeline. Tolerates up to ~100ms of drift
-    //     before doing a hard discard/silence-insert.
-    //   first_pts=0 — start the output audio at PTS 0 regardless of
-    //     where -ss put us in the source. Without this, audio PTS
-    //     would start at seekSec while video PTS starts at 0, giving
-    //     the player a ~seekSec offset between the streams. That's
-    //     the "1 second behind" symptom on resumed playback.
-    //   min_hard_comp=0.100 — only do a hard sync correction (insert/
-    //     drop samples) if drift exceeds 100ms. Smaller drifts get
-    //     handled by sample-rate stretching, which is inaudible. The
-    //     ffmpeg default of 0.1 is fine but we pin it for clarity.
-    '-af', 'aresample=async=1:first_pts=0:min_hard_comp=0.100',
-    // Audio: stereo AAC. Source multi-channel layouts (EAC3 7.1,
-    // TrueHD, 5.1) used to reach the AAC encoder unchanged and produce
-    // invalid-or-silent output. Downmixing pre-encode is what every
-    // mainstream streaming service does. -ac 2 must come BEFORE -c:a aac
-    // so it applies to the encoder input.
-    '-ac', '2',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    // Audio sample rate: AAC's "sweet spot" is 48kHz. Some sources
-    // ship 44.1k (DVD rip era) or 96k (high-res FLAC remixes). Pinning
-    // to 48k means the resampler has a single target and the AAC
-    // encoder's frame boundary math stays stable.
-    '-ar', '48000',
-    // Mux queue size: when video frames arrive faster than audio
-    // frames (or vice versa) during seek/recovery, the default
-    // queue (1024) overflows and ffmpeg aborts with "Too many
-    // packets buffered for output stream". Bumping to 4096 covers
-    // realistic drift windows without burning more than a few MB.
-    '-max_muxing_queue_size', '4096',
-    '-f', 'mp4',
-    // Smaller fragment duration so the player gets its first fragment
-    // (and therefore its first decodable bytes) sooner. With the
-    // default ~1-second fragment threshold we'd buffer up to a second
-    // of output before emitting; 200ms means the first frame reaches
-    // the browser within a quarter-second of being encoded.
-    '-frag_duration', '200000',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-    'pipe:1',
-  ]
+  // v1.12.0 — the full ffmpeg arg list now lives in the testable
+  // buildFfmpegArgs() (server/lib/ffmpeg-args.js) so an end-to-end
+  // transcode smoke test runs these EXACT args through the bundled
+  // binary before every release. This is the guard that would have
+  // caught the v1.11.3 `-fps_mode` disaster. Do not inline args here
+  // again — keep the route and the test sharing one source of truth.
+  const ffmpegArgs = buildFfmpegArgs({ inputUrl, seekSec, audioIdx, needsTranscode })
 
   console.log(`${reqTag} spawn ffmpeg: needsTranscode=${needsTranscode} vcodec=${meta.vcodec || '(null)'} seek=${seekSec.toFixed(1)}s audio=${audioIdx ?? 'default'}`)
   console.log(`${reqTag} args: ${ffmpegArgs.join(' ')}`)
@@ -3441,6 +3351,34 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // fork()'d child processes can also receive 'disconnect' from the
 // parent IPC channel; treat that as a shutdown signal too.
 process.on('disconnect', () => gracefulShutdown('disconnect'))
+
+// ── v1.12.0 Crash guards ───────────────────────────────────────
+// The server has many fire-and-forget async paths (TMDB SWR background
+// refresh, getImdbId lookups, DLNA callbacks, the subtitle/indexer
+// fetches). Under modern Node a single unhandled promise rejection
+// terminates the process by DEFAULT — which for a long-lived streaming
+// server behind Electron means one missed `.catch` becomes a hard
+// crash mid-binge (the watchdog then respawns, interrupting playback).
+// Log and keep running instead. An uncaughtException is more serious
+// (the process state may be corrupt) but for a media server, crashing
+// on, say, an EPIPE when a client socket dies mid-stream is worse than
+// soldiering on — we log it and stay up. If a truly fatal error
+// recurs, the symptoms will show in the log for diagnosis.
+process.on('unhandledRejection', (reason) => {
+  try {
+    const msg = reason?.stack || reason?.message || String(reason)
+    console.error('[unhandledRejection]', msg)
+  } catch {}
+})
+process.on('uncaughtException', (err) => {
+  try {
+    console.error('[uncaughtException]', err?.stack || err?.message || String(err))
+  } catch {}
+  // Deliberately do NOT exit. A streaming server should survive an
+  // EPIPE/ECONNRESET from a dropped client far more often than it hits
+  // a genuinely unrecoverable state. The graceful-shutdown path handles
+  // intentional termination.
+})
 
 // ── v1.11.0 ffmpeg registry race fix ───────────────────────────
 // global.__ffmpegByHash was previously lazy-initialised inside the
