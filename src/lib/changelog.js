@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.4',
+    date: '2026-05-18',
+    title: '✅ Continue Watching — fixed for real (the position was never being saved)',
+    items: [
+      'The diagnostic trace from 1.14.3 finally pinned it: the resume position was being read as 0 because it was never SAVED. Every prior fix (all ~15) worked on the SEEK side — jumping to a saved position — which was never actually broken. The broken half was the SAVE side.',
+      'Why: for a transcoded title the player\'s clock is "local" to the current transcode segment and resets toward 0 every time you seek. The save was recording that local value, which was almost always under the 30-second minimum, so nothing got stored — leaving resume with nothing to resume to.',
+      'Fix: every place that saves your position now records the ABSOLUTE position in the movie (local time + the transcode\'s start offset), so it\'s stored correctly and Continue Watching has a real timestamp to return to. Covered by unit tests, and the diagnostic trace stays in for one release so the fix can be confirmed in the logs.',
+      'Separately: that frustrating wall of subtitle errors when a subtitle host is down is now correctly suppressed after the first failure (the host goes into a short cooldown) instead of retrying dozens of times.',
+    ],
+  },
+  {
     version: '1.14.3',
     date: '2026-05-18',
     title: '🔎 Resume diagnostics + dead-source clarity',

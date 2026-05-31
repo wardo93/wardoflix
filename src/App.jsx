@@ -8,7 +8,7 @@ import {
   isMagnetLink, isDirectUrl, BROWSER_SAFE_VCODECS, formatAudioTrackLabel,
   seedHealth, seedHealthLabel, inferType, formatSpeed, formatTime, uuid,
 } from './lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime } from './lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset } from './lib/url.js'
 import {
   useDebounce, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
@@ -2260,7 +2260,28 @@ function App() {
   const withResumeT = useCallback((url) => {
     try { return withResumeTime(url, streamResumeTargetRef.current) } catch { return url }
   }, [])
-  // v1.14.3 — diagnostic logger for the resume path. Posts to
+  // v1.14.4 — THE actual resume bug was here, on the SAVE side.
+  // saveResumePosition was being fed player.currentTime(), which for a
+  // /remux transcode is LOCAL segment time (resets toward 0 on every
+  // seek/segment), not the real movie position. So it was usually under
+  // the 30s save threshold → nothing stored → readResumePosition()
+  // returned 0 → "resume" had nothing to resume to. The diagnostic log
+  // proved it: `read=0`. Every prior fix was on the read/seek side,
+  // which actually worked. This computes the ABSOLUTE position the
+  // saver should have been using all along: local currentTime + the
+  // /remux ?t= offset (parsed from the live source URL via a ref so
+  // there's no stale-closure problem across the same-media swap).
+  const currentSourceRef = useRef(null)
+  // (streamDurationRef already declared above, near streamDuration state)
+  const remuxOffsetOfSource = useCallback(() => parseRemuxOffset(currentSourceRef.current || ''), [])
+  // Absolute movie position of the player right now (handles /remux's
+  // local-time axis). Use this for ALL saveResumePosition calls.
+  const absPlayerPos = useCallback((player) => {
+    let local = 0
+    try { local = player?.currentTime?.() || 0 } catch {}
+    return local + remuxOffsetOfSource()
+  }, [remuxOffsetOfSource])
+  // Diagnostic logger for the resume path. Posts to
   // /api/debug-log, which the server writes into wardoflix.log as
   // [renderer:resume] — the same channel the peer-watchdog uses. This
   // exists because resume has been "fixed" repeatedly without me being
@@ -2277,6 +2298,11 @@ function App() {
     } catch {}
   }, [])
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
+  // v1.14.4 — keep refs in sync so absPlayerPos() / save sites read the
+  // CURRENT source + ffprobed duration without stale closures (the
+  // same-media swap keeps the old player + its timeupdate handler alive
+  // across source changes, so a closure over `source` would go stale).
+  useEffect(() => { currentSourceRef.current = source }, [source])
 
   // Discord Rich Presence — push the playing metadata up to the main
   // process whenever it changes. Cleared when the player teardown sets
@@ -2535,8 +2561,8 @@ function App() {
         if (canEscalate) {
           const nextStage = stage + 1
           remuxFallbackRef.current = nextStage
-          const pos = (() => { try { return player.currentTime() || 0 } catch { return 0 } })()
-          const dur = (() => { try { return player.duration() || 0 } catch { return 0 } })()
+          const pos = absPlayerPos(player) // v1.14.4 — absolute, not local /remux time
+          const dur = streamDurationRef.current || 0
           if (pos > 0 && playingMetadataRef.current) {
             try { saveResumePosition(playingMetadataRef.current, pos, dur) } catch {}
           }
@@ -2762,8 +2788,13 @@ function App() {
       if (now - lastResumeSave < 5000) return
       lastResumeSave = now
       const meta = playingMetadataRef.current
-      const t = player.currentTime() || 0
-      const d = player.duration()
+      // v1.14.4 — save ABSOLUTE position (local currentTime + /remux
+      // offset), not raw currentTime. The old raw value was local
+      // transcode time, which is why resume never had a usable position.
+      const t = absPlayerPos(player)
+      // Prefer the ffprobed full duration; player.duration() on a live
+      // /remux pipe is only the buffered length, not the real total.
+      const d = streamDurationRef.current || (() => { const pd = player.duration(); return isFinite(pd) ? pd + remuxOffsetOfSource() : 0 })()
       saveResumePosition(meta, t, isFinite(d) ? d : 0)
     })
 
@@ -4047,10 +4078,10 @@ function App() {
       try {
         if (playerRef.current && !playerRef.current.isDisposed()) {
           // Persist resume position before disposing — same
-          // best-effort save handleClear does.
+          // best-effort save handleClear does. v1.14.4 — absolute pos.
           try {
-            const t = playerRef.current.currentTime() || 0
-            const d = playerRef.current.duration()
+            const t = absPlayerPos(playerRef.current)
+            const d = streamDurationRef.current || 0
             if (playingMetadataRef.current && t > 0) {
               saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
             }
@@ -4254,10 +4285,10 @@ function App() {
             className="topbar-winbtn topbar-exit"
             onClick={() => {
               try {
-                // Best-effort graceful persist before we die
+                // Best-effort graceful persist before we die. v1.14.4 — absolute pos.
                 if (playerRef.current && !playerRef.current.isDisposed()) {
-                  const t = playerRef.current.currentTime() || 0
-                  const d = playerRef.current.duration()
+                  const t = absPlayerPos(playerRef.current)
+                  const d = streamDurationRef.current || 0
                   saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
                 }
               } catch {}
@@ -4424,9 +4455,9 @@ function App() {
                                 try {
                                   const currentSrc = source
                                   if (currentSrc) {
-                                    const pos = p.currentTime() || 0
+                                    const pos = absPlayerPos(p) // v1.14.4 — absolute pos
                                     if (pos > 0 && playingMetadataRef.current) {
-                                      try { saveResumePosition(playingMetadataRef.current, pos, p.duration() || 0) } catch {}
+                                      try { saveResumePosition(playingMetadataRef.current, pos, streamDurationRef.current || 0) } catch {}
                                     }
                                     const sep = currentSrc.includes('?') ? '&' : '?'
                                     setSource(`${currentSrc}${sep}fresh=${Date.now()}`)
@@ -4447,8 +4478,9 @@ function App() {
                       onClick={() => {
                         try {
                           if (playerRef.current && !playerRef.current.isDisposed()) {
-                            const t = playerRef.current.currentTime() || 0
-                            const d = playerRef.current.duration()
+                            // v1.14.4 — absolute pos (local + /remux offset)
+                            const t = absPlayerPos(playerRef.current)
+                            const d = streamDurationRef.current || 0
                             saveResumePosition(playingMetadataRef.current, t, isFinite(d) ? d : 0)
                           }
                         } catch {}
@@ -4511,12 +4543,9 @@ function App() {
                         // doesn't lie. Parsed from the current source URL
                         // here rather than stored in state, so it stays in
                         // sync with whatever's actually playing.
-                        if (!source || !source.includes('/remux/')) return 0
-                        try {
-                          const qs = new URLSearchParams(source.split('?')[1] || '')
-                          const t = parseFloat(qs.get('t') || '0')
-                          return Number.isFinite(t) && t > 0 ? t : 0
-                        } catch { return 0 }
+                        // v1.14.4 — same helper the SAVE side uses, so
+                        // display offset and saved position can't drift.
+                        return parseRemuxOffset(source || '')
                       })()}
                       subStyle={subStyle}
                       setSubStyle={setSubStyle}

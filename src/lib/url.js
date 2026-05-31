@@ -21,6 +21,23 @@ export function upgradeStreamUrlForCodec(url, vcodec) {
   return `${swapped}${sep}transcode=1`
 }
 
+// v1.14.4 — parse the /remux ?t= offset (seconds) out of a source URL.
+// A /remux transcode that started at ?t=N has a LOCAL time axis (the
+// player's currentTime() is 0 at content-second N), so the real movie
+// position is currentTime() + this offset. Used both to DISPLAY the
+// right time on the seekbar AND — the actual resume fix — to SAVE the
+// absolute position (the save side was storing raw local currentTime,
+// which is why resume never had a usable value). Returns 0 for /stream
+// URLs, missing/zero t, or anything unparseable.
+export function parseRemuxOffset(url) {
+  try {
+    if (typeof url !== 'string' || !url.includes('/remux/')) return 0
+    const qs = new URLSearchParams(url.split('?')[1] || '')
+    const t = parseFloat(qs.get('t') || '0')
+    return Number.isFinite(t) && t > 0 ? t : 0
+  } catch { return 0 }
+}
+
 // v1.14.2 — merge a resume position into a /remux URL as ?t=<sec>.
 //
 // This is THE fix for the long-standing "Continue Watching restarts from

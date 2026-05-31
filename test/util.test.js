@@ -19,7 +19,7 @@ import {
   formatTime,
   uuid,
 } from '../src/lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime } from '../src/lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset } from '../src/lib/url.js'
 
 describe('isMagnetLink', () => {
   it('accepts valid magnet URIs (case insensitive)', () => {
@@ -210,6 +210,31 @@ describe('upgradeStreamUrlForCodec', () => {
   it('handles null/empty URLs', () => {
     expect(upgradeStreamUrlForCodec(null, 'hevc')).toBe(null)
     expect(upgradeStreamUrlForCodec('', 'hevc')).toBe('')
+  })
+})
+
+describe('parseRemuxOffset (absolute-position resume fix, save side)', () => {
+  it('reads the ?t= offset from a /remux URL', () => {
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?transcode=1&t=1800')).toBe(1800)
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?t=96')).toBe(96)
+  })
+  it('returns 0 for /remux without t', () => {
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?transcode=1')).toBe(0)
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv')).toBe(0)
+  })
+  it('returns 0 for /stream URLs (no local-time offset there)', () => {
+    expect(parseRemuxOffset('http://x/stream/abc/f.mp4?t=1800')).toBe(0)
+  })
+  it('returns 0 for junk / non-string / zero / negative', () => {
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?t=0')).toBe(0)
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?t=-5')).toBe(0)
+    expect(parseRemuxOffset('http://x/remux/abc/f.mkv?t=abc')).toBe(0)
+    expect(parseRemuxOffset(null)).toBe(0)
+    expect(parseRemuxOffset(undefined)).toBe(0)
+  })
+  it('round-trips with withResumeTime (bake t, then read it back)', () => {
+    const baked = withResumeTime('http://x/remux/abc/f.mkv?transcode=1', 642)
+    expect(parseRemuxOffset(baked)).toBe(642)
   })
 })
 
