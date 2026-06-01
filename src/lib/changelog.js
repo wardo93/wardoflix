@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.5',
+    date: '2026-05-18',
+    title: '✅ Continue Watching — the last piece (a bad "you finished it" check)',
+    items: [
+      'v1.14.4 fixed the save — your position is now stored correctly (the log confirmed it: read=652). But the resume was STILL being thrown away by a leftover "if you\'re within 60s of the end, start fresh" check.',
+      'That check compared your position against a saved duration that was garbage: on a live transcode, the only "duration" available is the buffered length, so the stored total ended up ≈ your position — making every resume look like "you\'re at the end, so start over."',
+      'Fix: removed that check entirely. It was also redundant — finishing a title already clears its resume entry, so if a saved position exists, you didn\'t finish and resume is what you want. Now: saved position → resume to it, period. Also stopped storing the bogus duration.',
+      'This was confirmed against your actual log (read=652, but target=0), not another hypothesis. After updating: watch 30+ seconds, go back, Continue Watching → it lands where you left off.',
+    ],
+  },
+  {
     version: '1.14.4',
     date: '2026-05-18',
     title: '✅ Continue Watching — fixed for real (the position was never being saved)',

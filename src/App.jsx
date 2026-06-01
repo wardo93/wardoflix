@@ -2752,13 +2752,11 @@ function App() {
         // If the URL already carries ?t= (e.g. set elsewhere), the
         // content already starts at the resume point — nothing to do.
         if (/[?&]t=/.test(source)) { rlog('-> /remux already has ?t=; no-op (already at resume point)'); return }
-        // Within 60s of the end → treat as finished, start from 0.
-        // At this point source is /remux with no ?t=, so duration() is
-        // the full-from-0 length, making the comparison meaningful.
-        try {
-          const d = player.duration()
-          if (isFinite(d) && d > 0 && t >= d - 60) { rlog(`-> within 60s of end (t=${t} d=${d}); start fresh`); return }
-        } catch {}
+        // v1.14.5 — NO near-end guard here. It used player.duration(),
+        // which on a live /remux pipe is the buffered length, not the
+        // real total — so the comparison was meaningless and zeroed
+        // valid resumes. Finishing a title clears its resume entry, so a
+        // saved position existing means resume is wanted. Just do it.
         const base = source.split('?')[0]
         const qs = new URLSearchParams(source.split('?')[1] || '')
         qs.set('t', String(Math.floor(t)))
@@ -2771,14 +2769,11 @@ function App() {
         setSource(`${base}?${qs.toString()}`)
         return
       }
-      // Direct /stream (byte-seekable): a native seek works.
+      // Direct /stream (byte-seekable): a native seek works. No near-end
+      // guard (see above) — resume to the saved position.
       try {
-        const d = player.duration()
-        // Don't resume if we're within 60s of the end — treat as finished.
-        if (!isFinite(d) || d <= 0 || t < d - 60) {
-          rlog(`-> /stream currentTime(${t})`)
-          player.currentTime(t)
-        } else { rlog(`-> /stream within 60s of end; start fresh`) }
+        rlog(`-> /stream currentTime(${t})`)
+        player.currentTime(t)
       } catch {}
     })
     // Throttle resume-save to once every ~5 seconds.
@@ -2792,9 +2787,13 @@ function App() {
       // offset), not raw currentTime. The old raw value was local
       // transcode time, which is why resume never had a usable position.
       const t = absPlayerPos(player)
-      // Prefer the ffprobed full duration; player.duration() on a live
-      // /remux pipe is only the buffered length, not the real total.
-      const d = streamDurationRef.current || (() => { const pd = player.duration(); return isFinite(pd) ? pd + remuxOffsetOfSource() : 0 })()
+      // v1.14.5 — only store the ffprobed full duration, or 0 (unknown).
+      // Do NOT fall back to player.duration() — on a live /remux pipe
+      // that's the buffered length (offset+~60s), which gets stored as a
+      // fake "total" ≈ the position and used to look like "finished".
+      // That bogus duration is exactly what broke resume. 0 = unknown,
+      // which all readers treat as "no near-end assumption".
+      const d = streamDurationRef.current || 0
       saveResumePosition(meta, t, isFinite(d) ? d : 0)
     })
 
@@ -3357,11 +3356,20 @@ function App() {
     // of-end → treat as finished (start fresh). Duration comes from the
     // saved entry's d (full source duration), reliable here.
     try {
+      // v1.14.5 — THE bug: the near-end guard here was zeroing valid
+      // resume positions. It compared read (e.g. 652) against the saved
+      // duration (e.g. 656) and decided "within 60s of the end → start
+      // fresh". But the saved duration was GARBAGE: player.duration() on
+      // a live /remux pipe is the buffered length, so the stored "dur"
+      // was really offset+buffered ≈ the position itself → the guard
+      // fired every single time. And the guard is redundant anyway:
+      // genuinely finishing a title CLEARS its resume entry (the player
+      // 'ended' handler), so a saved position existing AT ALL means you
+      // didn't finish. So: if there's a saved position, resume to it.
+      // Full stop. No duration comparison.
       const rt = readResumePosition(metadata)
-      const entry = loadResumeMap()[resumeKey(metadata)]
-      const fullDur = entry && entry.d > 0 ? entry.d : 0
-      streamResumeTargetRef.current = (rt > 0 && (!fullDur || rt < fullDur - 60)) ? rt : 0
-      rlog(`capture key=${resumeKey(metadata)} read=${rt} dur=${fullDur} target=${streamResumeTargetRef.current}`)
+      streamResumeTargetRef.current = rt > 0 ? rt : 0
+      rlog(`capture key=${resumeKey(metadata)} read=${rt} target=${streamResumeTargetRef.current}`)
     } catch (e) { streamResumeTargetRef.current = 0; rlog(`capture FAILED ${e?.message}`) }
     setShowIntro(false)  // will be triggered when player emits canplay
     setStreamProgress(null)
