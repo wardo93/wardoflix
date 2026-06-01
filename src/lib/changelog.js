@@ -13,6 +13,17 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.6',
+    date: '2026-05-18',
+    title: '⏩ Seeking forward (past what\'s buffered) now works',
+    items: [
+      'Resume + seeking within already-played video worked after 1.14.5, but jumping FORWARD past the buffered part didn\'t — it pulled you back to roughly where you already were.',
+      'Same root cause as the resume bug, in a different spot: the seek logic clamped your target against the player\'s reported duration, which on a live transcode is just the buffered length (~30s), not the real movie length. So any forward jump got capped at ≈ your current position.',
+      'Fix: forward seeks now clamp against the real (ffprobed) movie duration, or — if that isn\'t known yet — aren\'t clamped at all (the server already limits the seek to the real file length). So you can scrub anywhere, forward or back. The transcode restarts at the spot you picked.',
+      'Note: jumping far ahead on a torrent that hasn\'t downloaded that part yet may take a few seconds to buffer — that\'s the download catching up, not the seek failing.',
+    ],
+  },
+  {
     version: '1.14.5',
     date: '2026-05-18',
     title: '✅ Continue Watching — the last piece (a bad "you finished it" check)',

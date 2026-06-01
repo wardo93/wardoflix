@@ -21,6 +21,20 @@ export function upgradeStreamUrlForCodec(url, vcodec) {
   return `${swapped}${sep}transcode=1`
 }
 
+// v1.14.6 — clamp a seek target to the real movie duration.
+//
+// The forward-seek bug: the seek path used to clamp against
+// player.duration(), which on a live /remux transcode is the BUFFERED
+// length (~30s), not the full movie. So every forward seek got pulled
+// back to ~the current position ("can't play past what's buffered").
+// Clamp to the ffprobed full duration when we have it; otherwise return
+// the target unclamped and let the server clamp to the actual file
+// length. Never clamp against the unreliable buffered length.
+export function clampSeekTarget(target, fullDur) {
+  const t = Math.max(0, Number(target) || 0)
+  return (fullDur && fullDur > 0) ? Math.min(fullDur - 1, t) : t
+}
+
 // v1.14.4 — parse the /remux ?t= offset (seconds) out of a source URL.
 // A /remux transcode that started at ?t=N has a LOCAL time axis (the
 // player's currentTime() is 0 at content-second N), so the real movie

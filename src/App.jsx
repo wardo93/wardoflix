@@ -8,7 +8,7 @@ import {
   isMagnetLink, isDirectUrl, BROWSER_SAFE_VCODECS, formatAudioTrackLabel,
   seedHealth, seedHealthLabel, inferType, formatSpeed, formatTime, uuid,
 } from './lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset } from './lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset, clampSeekTarget } from './lib/url.js'
 import {
   useDebounce, useHorizontalRowGestures, useFocusTrap,
 } from './lib/hooks.js'
@@ -3956,10 +3956,16 @@ function App() {
         }
       }
     } catch {}
-    // Clamp to ABSOLUTE duration (source total) so we don't seek past
-    // the end of the movie.
-    const dur = (() => { try { return p.duration() + currentOffset } catch { return 0 } })()
-    const clamped = Math.max(0, dur > 0 ? Math.min(dur - 1, target) : target)
+    // v1.14.6 — THE forward-seek bug. This used to clamp the target to
+    // `p.duration() + currentOffset`. But p.duration() on a live /remux
+    // pipe is the BUFFERED length (~30s), not the real total — so the
+    // clamp ceiling ≈ the current position, and EVERY forward seek got
+    // pulled back to roughly where you already were ("can't play
+    // further"). Use the ffprobed full duration (streamDurationRef) for
+    // the ceiling. If we don't have it, DON'T clamp — pass the target
+    // through; the /remux route clamps to the real file duration
+    // server-side anyway (seekSec = min(seekSec, duration-5)).
+    const clamped = clampSeekTarget(target, streamDurationRef.current || 0)
     // Out of buffer on /remux — rebuild URL with ?t= and reload.
     // Critically: we do NOT call player.currentTime() here, so the
     // browser never fires a native seek that would then trip

@@ -19,7 +19,7 @@ import {
   formatTime,
   uuid,
 } from '../src/lib/util.js'
-import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset } from '../src/lib/url.js'
+import { upgradeStreamUrlForCodec, toAbsStreamUrl, withResumeTime, parseRemuxOffset, clampSeekTarget } from '../src/lib/url.js'
 
 describe('isMagnetLink', () => {
   it('accepts valid magnet URIs (case insensitive)', () => {
@@ -210,6 +210,31 @@ describe('upgradeStreamUrlForCodec', () => {
   it('handles null/empty URLs', () => {
     expect(upgradeStreamUrlForCodec(null, 'hevc')).toBe(null)
     expect(upgradeStreamUrlForCodec('', 'hevc')).toBe('')
+  })
+})
+
+describe('clampSeekTarget (forward-seek fix)', () => {
+  it('allows a forward seek when the full duration is known and larger', () => {
+    // Movie is 3600s; user seeks to 600. Must NOT be pulled back.
+    expect(clampSeekTarget(600, 3600)).toBe(600)
+  })
+  it('clamps to just under the full duration when seeking past the end', () => {
+    expect(clampSeekTarget(4000, 3600)).toBe(3599)
+  })
+  it('does NOT clamp when the full duration is unknown (0) — server clamps', () => {
+    // This is the bug fix: with no reliable total, pass the target
+    // through rather than clamping against a bogus buffered length.
+    expect(clampSeekTarget(600, 0)).toBe(600)
+    expect(clampSeekTarget(600, null)).toBe(600)
+    expect(clampSeekTarget(600, undefined)).toBe(600)
+  })
+  it('floors negatives at 0', () => {
+    expect(clampSeekTarget(-5, 3600)).toBe(0)
+    expect(clampSeekTarget(-5, 0)).toBe(0)
+  })
+  it('handles non-numbers', () => {
+    expect(clampSeekTarget('600', 3600)).toBe(600)
+    expect(clampSeekTarget(NaN, 3600)).toBe(0)
   })
 })
 
