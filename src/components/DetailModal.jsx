@@ -90,10 +90,15 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
   useEffect(() => {
     if (!item) return
     const handleKey = (e) => {
-      if (e.key === 'Escape') {
-        if (showTrailer) setShowTrailer(false)
-        else onClose()
-      }
+      if (e.key !== 'Escape') return
+      // Don't let Escape tear down the whole modal when the user is just
+      // dismissing an open <select> (the season picker). The native
+      // dropdown handles its own Escape, but the keydown still bubbles to
+      // window — without this guard, opening the season picker and hitting
+      // Escape closed the entire detail modal instead of the dropdown.
+      if (e.target?.tagName === 'SELECT') return
+      if (showTrailer) setShowTrailer(false)
+      else onClose()
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
@@ -519,7 +524,7 @@ export function DetailModal({ item, onClose, onStream, onSelectItem }) {
                     const epMeta = { id: item?.id, title: item?.title, season: Number(t.season || selectedSeason), episode: epNum }
                     return (
                       <button
-                        key={i}
+                        key={epKey}
                         className={`source-btn ${watched ? 'source-btn--watched' : ''}`}
                         data-watched={watched ? 'yes' : 'no'}
                         title={watched ? 'Watched — Shift+click to unmark' : 'Click to play · Shift+click to mark watched'}

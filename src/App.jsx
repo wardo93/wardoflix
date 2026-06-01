@@ -221,7 +221,6 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
       !(h.title === entry.title && h.season === entry.season && h.episode === entry.episode)
     )
     saveHistory(list)
-    window.dispatchEvent(new Event('wardoflix:history-updated'))
     // v1.7.9: friendly toast + Undo so right-click removals aren't
     // a permanent surprise. The existing hover-× button calls this
     // too, so both interaction paths benefit from the safety net.
@@ -231,7 +230,6 @@ function ContinueWatchingRow({ onPlay, onInfo }) {
         label: 'Undo',
         onClick: () => {
           saveHistory(prevList)
-          window.dispatchEvent(new Event('wardoflix:history-updated'))
         },
       },
     })
@@ -2281,22 +2279,9 @@ function App() {
     try { local = player?.currentTime?.() || 0 } catch {}
     return local + remuxOffsetOfSource()
   }, [remuxOffsetOfSource])
-  // Diagnostic logger for the resume path. Posts to
-  // /api/debug-log, which the server writes into wardoflix.log as
-  // [renderer:resume] — the same channel the peer-watchdog uses. This
-  // exists because resume has been "fixed" repeatedly without me being
-  // able to observe it; this makes the next reproduction unambiguous
-  // (was a position captured? did the handler fire? what did it read?
-  // did it bake ?t= or seek or do nothing?). Cheap; safe to leave in.
-  const rlog = useCallback((msg) => {
-    try {
-      fetch((window.__API_BASE__ || '') + '/api/debug-log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag: 'resume', msg: String(msg).slice(0, 300) }),
-      }).catch(() => {})
-    } catch {}
-  }, [])
+  // (v1.14.3 [renderer:resume] diagnostic trace removed in v1.14.7 — it
+  // served its purpose; resume/seek are confirmed working. The
+  // /api/debug-log endpoint stays for the peer-watchdog's use.)
   useEffect(() => { playingMetadataRef.current = playingMetadata }, [playingMetadata])
   // v1.14.4 — keep refs in sync so absPlayerPos() / save sites read the
   // CURRENT source + ffprobed duration without stale closures (the
@@ -2730,9 +2715,7 @@ function App() {
       resumeApplied = true
       const meta = playingMetadataRef.current
       const t = readResumePosition(meta)
-      const srcTail = (source || '').slice(-48)
-      rlog(`loadedmetadata key=${resumeKey(meta)} read=${t} src=…${srcTail}`)
-      if (!(t > 0)) { rlog('-> no saved position; starting at 0'); return }
+      if (!(t > 0)) return
       // v1.14.1 — RESUME BUG FIX. The old code always did
       // player.currentTime(t). That works for a direct /stream URL
       // (byte-seekable), but a /remux transcode is served with
@@ -2751,7 +2734,7 @@ function App() {
       if (isRemux) {
         // If the URL already carries ?t= (e.g. set elsewhere), the
         // content already starts at the resume point — nothing to do.
-        if (/[?&]t=/.test(source)) { rlog('-> /remux already has ?t=; no-op (already at resume point)'); return }
+        if (/[?&]t=/.test(source)) return // already at resume point
         // v1.14.5 — NO near-end guard here. It used player.duration(),
         // which on a live /remux pipe is the buffered length, not the
         // real total — so the comparison was meaningless and zeroed
@@ -2765,14 +2748,12 @@ function App() {
         // seekRemuxAware uses).
         seekReloadPendingRef.current = true
         setTimeout(() => { seekReloadPendingRef.current = false }, 2000)
-        rlog(`-> /remux rebuild to ?t=${Math.floor(t)} (setSource)`)
         setSource(`${base}?${qs.toString()}`)
         return
       }
       // Direct /stream (byte-seekable): a native seek works. No near-end
       // guard (see above) — resume to the saved position.
       try {
-        rlog(`-> /stream currentTime(${t})`)
         player.currentTime(t)
       } catch {}
     })
@@ -3369,8 +3350,7 @@ function App() {
       // Full stop. No duration comparison.
       const rt = readResumePosition(metadata)
       streamResumeTargetRef.current = rt > 0 ? rt : 0
-      rlog(`capture key=${resumeKey(metadata)} read=${rt} target=${streamResumeTargetRef.current}`)
-    } catch (e) { streamResumeTargetRef.current = 0; rlog(`capture FAILED ${e?.message}`) }
+    } catch { streamResumeTargetRef.current = 0 }
     setShowIntro(false)  // will be triggered when player emits canplay
     setStreamProgress(null)
     setAudioTracks([])
@@ -3616,14 +3596,19 @@ function App() {
             }
           })
 
-          if (deadChain && i < queue.length - 1) {
-            // Try the next source. Clean up this attempt first.
+          // v1.14.7 — was `if (deadChain && i < queue.length - 1)`, which
+          // had a real bug: when the LAST (or only) candidate was dead,
+          // the condition was false, so we fell through and COMMITTED the
+          // dead stream as success — leaving the user frozen on the
+          // "Connecting…" screen forever with no error. Now: dead is dead
+          // regardless of position. We always clean up; `continue` then
+          // either tries the next source or (on the last one) ends the
+          // loop, so the `if (!success)` block below shows a clear
+          // "couldn't connect / source too slow" message + auto-skip.
+          if (deadChain) {
             if (progressRef.current) { progressRef.current.close(); progressRef.current = null }
             // Tell the server to destroy the dead torrent immediately
             // instead of letting it sit around for the 2h auto-prune.
-            // Otherwise after 8 dead candidates we have 8 zombie torrents
-            // each retrying tracker/DHT — wasteful and counts toward our
-            // own outbound bandwidth budget.
             const deadHash = data?.infoHash
             if (deadHash) {
               fetch('/api/stream/dead', {
@@ -3636,7 +3621,10 @@ function App() {
             setSourceType(null)
             setStreamInfoHash(null)
             setStreamBaseUrl(null)
-            lastErr = new Error(`Source ${i + 1} had no active peers`)
+            const more = i < queue.length - 1
+            lastErr = new Error(more
+              ? `Source ${i + 1} had no active peers`
+              : 'This title\'s sources are too slow or have no seeders right now.')
             continue
           }
 
@@ -3661,7 +3649,6 @@ function App() {
               magnet: candidate.magnet,
               genreIds: gids,
             }, streamProfileId)
-            window.dispatchEvent(new Event('wardoflix:history-updated'))
           }
 
           // Fetch audio tracks + duration + vcodec. See comment on
@@ -4001,59 +3988,41 @@ function App() {
   const handleAudioChange = useCallback((audioIdx) => {
     if (!streamInfoHash) return
     setActiveAudioIdx(audioIdx)
-    // Reset the remux-escalation counter AND clear any pending seek-
-    // reload guard. An audio track switch is a fresh start — the old
-    // stream's escalation history shouldn't limit the new stream's
-    // error recovery, and a leftover seekReloadPendingRef would make
-    // the error handler ignore a real decode error on the new URL.
+    // An audio-track switch is a fresh start for the error ladder.
     remuxFallbackRef.current = 0
     seekReloadPendingRef.current = false
-    const currentPos = playerRef.current && !playerRef.current.isDisposed()
-      ? playerRef.current.currentTime() || 0
-      : 0
-    // Resolve the remux base URL. The direct /stream endpoint serves
-    // raw WebTorrent bytes and has no notion of audio-track selection —
-    // only /remux can honour `?audio=N` because it re-muxes through
-    // ffmpeg. So if the current source is a direct /stream URL we
-    // transparently upgrade to /remux here. When the underlying codec
-    // is H.264 the server will still `-c:v copy`, so there's no
-    // transcode cost — just an audio-only re-mix.
+    // v1.14.7 — switching audio used to (a) capture LOCAL currentTime,
+    // (b) build a new /remux URL WITHOUT the ?t= offset, then (c)
+    // setSource(null) → wait 50ms → setSource(newUrl) → manually seek
+    // back to the local time. On an offset (/remux?t=N) stream that
+    // landed playback at the WRONG absolute spot and restarted the
+    // transcode from 0; the null-then-set also defeated the same-media
+    // fast path (full teardown). Now: capture the ABSOLUTE position
+    // and encode it as ?t= on the new URL — the exact resume/seek
+    // mechanism — and let the same-media swap reload in place. No
+    // manual seek, no dispose dance, lands at the right spot.
+    const absPos = absPlayerPos(playerRef.current)
     let remuxBase
     if (streamBaseUrl) {
       remuxBase = streamBaseUrl.split('?')[0]
     } else if (source && source.includes('/stream/')) {
       remuxBase = source.replace('/stream/', '/remux/').split('?')[0]
+    } else if (source && source.includes('/remux/')) {
+      remuxBase = source.split('?')[0]
     } else {
       return
     }
-    const newUrl = `${remuxBase}?audio=${audioIdx}`
-    setSource(null)
-    setStreamBaseUrl(newUrl)
-    setTimeout(() => {
-      // If the user clicked Clear / Back / started a different stream
-      // during the 50ms dispose-settle wait, streamAliveRef flips to
-      // false and we must NOT rearm source — otherwise we ghost-launch
-      // the audio track of a stream the user already dismissed, which
-      // manifests as "clicked back, then the player re-appeared with
-      // the old episode's Spanish dub." Check before doing anything.
-      if (!streamAliveRef.current) return
-      setSource(newUrl)
-      setSourceType('url')
-      // Seek back to saved position once player is ready
-      const waitForPlayer = setInterval(() => {
-        if (!streamAliveRef.current) { clearInterval(waitForPlayer); return }
-        const p = playerRef.current
-        if (p && !p.isDisposed()) {
-          p.ready(() => {
-            if (currentPos > 0) p.currentTime(currentPos)
-            clearInterval(waitForPlayer)
-          })
-        }
-      }, 100)
-      // Safety cleanup
-      setTimeout(() => clearInterval(waitForPlayer), 10000)
-    }, 50)
-  }, [streamBaseUrl, streamInfoHash, source])
+    const qs = new URLSearchParams()
+    qs.set('audio', String(audioIdx))
+    // Preserve a forced transcode if the current source had one.
+    if (/[?&]transcode=1/.test(source || '')) qs.set('transcode', '1')
+    // Carry the current absolute position so playback resumes in place.
+    if (absPos > 0) qs.set('t', String(Math.floor(absPos)))
+    const newUrl = `${remuxBase}?${qs.toString()}`
+    setStreamBaseUrl(remuxBase)
+    setSourceType('url')
+    setSource(newUrl)
+  }, [streamBaseUrl, streamInfoHash, source, absPlayerPos])
 
   // Retry the current stream after a playback error. We keep the existing
   // player but re-issue src() and try to seek back to where we were — if

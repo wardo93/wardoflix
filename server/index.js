@@ -272,6 +272,15 @@ const streamBaseUrl = ''
 // KEEP files on disk so a re-stream can resume from cache.
 const TORRENT_TTL = 2 * 60 * 60 * 1000
 const torrentTimers = new Map()
+// v1.14.7 — idempotent destroy. The TTL timer callback, /api/stream/dead,
+// and graceful shutdown can all race to destroy the same torrent;
+// webtorrent throws on a second destroy(), which surfaced as an
+// unhandled rejection. A per-torrent flag makes it safe to call twice.
+function destroyTorrentSafely(t) {
+  if (!t || t.__wfDestroyed) return
+  t.__wfDestroyed = true
+  try { t.destroy({ destroyStore: false }) } catch (e) { console.warn('[torrent] destroy threw:', e?.message) }
+}
 function touchTorrent(infoHash) {
   // Normalize the info-hash to lowercase so the Map key and the lookup
   // below always match. Some call sites pass mixed-case hashes which
@@ -284,8 +293,7 @@ function touchTorrent(infoHash) {
     const t = client.torrents.find((t) => String(t.infoHash || '').toLowerCase() === key)
     if (t) {
       console.log(`Cleanup: ${t.name || key} (files kept in cache)`)
-      // destroy({ destroyStore: false }) is the default — we rely on it.
-      t.destroy({ destroyStore: false })
+      destroyTorrentSafely(t)
     }
     torrentTimers.delete(key)
     // Evict the REMUX_META entry for this hash — otherwise the map grows
@@ -555,7 +563,7 @@ app.post('/api/stream/dead', (req, res) => {
     // throws inside webtorrent and emits an unhandled rejection).
     const tmr = torrentTimers.get(hash)
     if (tmr) { clearTimeout(tmr); torrentTimers.delete(hash) }
-    t.destroy({ destroyStore: false })
+    destroyTorrentSafely(t)
     try { REMUX_META?.delete(hash) } catch {}
     // Force-kill any ffmpeg processes currently transcoding this torrent
     // so they don't keep CPU pinned for the 5s SIGTERM grace window.
@@ -1424,6 +1432,33 @@ function isHostCooling(url) {
 const EPISODE_CACHE = new Map()
 const EPISODE_CACHE_TTL = 30 * 60 * 1000 // 30 min
 
+// v1.14.7 — periodic pruner for the TTL caches that were leaking.
+// DETAILS_CACHE, TORRENT_CACHE and EPISODE_CACHE were plain Maps whose
+// TTL was only checked ON READ — expired entries were never deleted, so
+// over a long browsing/binge session they grew without bound (the
+// bug-hunt flagged all three). Other caches here (REMUX_META,
+// SUBTITLE_VTT_CACHE, EPISODE_LIST_CACHE) already cap + evict; these
+// didn't. Sweep every 5 min: drop expired entries, and hard-cap each at
+// 1000 (evict oldest by timestamp) as a burst backstop. All three use
+// the same { data, timestamp } shape.
+function pruneTtlCache(map, ttl, maxEntries = 1000) {
+  const now = Date.now()
+  for (const [k, v] of map) {
+    if (!v || (now - (v.timestamp || 0)) > ttl) map.delete(k)
+  }
+  if (map.size > maxEntries) {
+    const sorted = [...map.entries()].sort((a, b) => (a[1]?.timestamp || 0) - (b[1]?.timestamp || 0))
+    for (let i = 0; i < sorted.length - maxEntries; i++) map.delete(sorted[i][0])
+  }
+}
+setInterval(() => {
+  try {
+    pruneTtlCache(DETAILS_CACHE, DETAILS_CACHE_TTL)
+    pruneTtlCache(TORRENT_CACHE, TORRENT_CACHE_TTL)
+    pruneTtlCache(EPISODE_CACHE, EPISODE_CACHE_TTL)
+  } catch (e) { console.warn('[cache-prune] failed:', e?.message) }
+}, 5 * 60 * 1000).unref?.()
+
 // Torrentio endpoints — we hit MANY variants in parallel and keep every
 // stream we get back. The core reliability trick: Torrentio is sometimes
 // flaky on specific endpoints, and different provider combos return
@@ -2169,7 +2204,7 @@ app.post('/api/stream', (req, res) => {
           const key = String(freshlyAdded.infoHash || '').toLowerCase()
           const tmr = torrentTimers.get(key)
           if (tmr) { clearTimeout(tmr); torrentTimers.delete(key) }
-          freshlyAdded.destroy({ destroyStore: false })
+          destroyTorrentSafely(freshlyAdded)
           console.log(`[/api/stream] 504 — destroyed dead torrent ${key.slice(0, 8)} (never reached ready)`)
         }
       } catch (e) { console.warn('[/api/stream] 504 cleanup failed:', e?.message) }

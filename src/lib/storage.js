@@ -215,10 +215,20 @@ export function updateProfile(id, patch) {
 export function deleteProfile(id) {
   const list = loadProfiles().filter((p) => p.id !== id)
   saveProfiles(list)
-  // Clean the namespaced data for the deleted profile.
+  // Clean ALL the namespaced data for the deleted profile. v1.14.7:
+  // previously only history + resume were removed, so a deleted
+  // profile leaked its watched list, library, and per-profile prefs
+  // into localStorage forever (and a recreated profile with the same
+  // generated id would inherit the ghost data). These six prefixes are
+  // every key that getActiveProfileId() namespaces — keep in sync with
+  // the *KeyForActive helpers below.
   try {
-    localStorage.removeItem(`wardoflix:history:${id}`)
-    localStorage.removeItem(`wardoflix:resume:${id}`)
+    for (const ns of [
+      'history', 'resume', 'sub-style', 'audio-pref',
+      'quality-pref', 'watched', 'library', 'playback-rate', 'privacy-mode',
+    ]) {
+      localStorage.removeItem(`wardoflix:${ns}:${id}`)
+    }
   } catch {}
   // If the active profile was deleted, clear the pointer so the gate
   // re-opens on next render.
@@ -297,6 +307,12 @@ export function saveHistory(list, profileId) {
   // now active (user switched profiles during the connect).
   const key = profileId ? `wardoflix:history:${profileId}` : historyKeyForActive()
   try { localStorage.setItem(key, JSON.stringify(list.slice(0, HISTORY_MAX))) } catch {}
+  // v1.14.7 — fire the same-tab signal here, at the single write path,
+  // so every mutation (addToHistory, removeEntry, undo) keeps the
+  // Continue Watching row live without each caller having to remember
+  // to dispatch. Cross-tab updates are still covered by the native
+  // 'storage' event in useHistory.
+  try { window.dispatchEvent(new Event('wardoflix:history-updated')) } catch {}
 }
 
 export function loadHistoryForProfile(profileId) {
@@ -426,6 +442,20 @@ export function clearResumePosition(meta) {
   } catch {}
 }
 
+// v1.14.7 — bounded, write-recency-aware insert for the small per-title
+// preference maps (sub-offset, intro-mark, quality, playback-rate).
+// Plain `map[k] = v` keeps a key at its ORIGINAL insertion position, so
+// the FIFO cap could evict a frequently re-tuned ("hot") key while a
+// write-once key that happens to be newer survives. Deleting first
+// forces re-insertion at the end, so eviction drops the genuinely
+// least-recently-written entries. Values stay raw — no schema change.
+function putBounded(map, key, value, max = 500, drop = 50) {
+  delete map[key]
+  map[key] = value
+  const keys = Object.keys(map)
+  if (keys.length > max) for (let i = 0; i < drop; i++) delete map[keys[i]]
+}
+
 // ── Subtitle offset, persisted per title ────────────────────────
 // Previously sub offset reset every time you switched episodes. For a
 // show with consistently-mistimed subs, that meant adjusting on every
@@ -460,10 +490,7 @@ export function saveSubOffset(meta, offset, applyToShow = false) {
   try {
     const map = loadSubOffsets()
     if (Math.abs(offset) < 0.05) delete map[key]
-    else map[key] = Math.round(offset * 100) / 100
-    // Cap stored entries
-    const keys = Object.keys(map)
-    if (keys.length > 500) for (let i = 0; i < 100; i++) delete map[keys[i]]
+    else putBounded(map, key, Math.round(offset * 100) / 100, 500, 100)
     localStorage.setItem('wardoflix:sub-offsets', JSON.stringify(map))
   } catch {}
 }
@@ -486,7 +513,7 @@ export function saveIntroMark(showId, mark) {
   try {
     const map = loadIntroMarks()
     if (!mark) delete map[String(showId)]
-    else map[String(showId)] = { introStart: mark.introStart || null, introEnd: mark.introEnd || null, outroStart: mark.outroStart || null }
+    else putBounded(map, String(showId), { introStart: mark.introStart || null, introEnd: mark.introEnd || null, outroStart: mark.outroStart || null })
     localStorage.setItem('wardoflix:intro-marks', JSON.stringify(map))
   } catch {}
 }
@@ -556,10 +583,7 @@ export function saveQualityPref(titleId, quality) {
   if (!titleId || !quality) return
   try {
     const map = loadQualityPrefs()
-    map[String(titleId)] = String(quality).slice(0, 16)
-    // Cap so the map can't grow forever — drop oldest 50 once we hit 500
-    const keys = Object.keys(map)
-    if (keys.length > 500) for (let i = 0; i < 50; i++) delete map[keys[i]]
+    putBounded(map, String(titleId), String(quality).slice(0, 16))
     localStorage.setItem(qualityPrefKeyForActive(), JSON.stringify(map))
   } catch {}
 }
@@ -726,9 +750,7 @@ export function savePlaybackRate(titleId, rate) {
   try {
     const map = loadPlaybackRates()
     if (Math.abs(rate - 1) < 0.01) delete map[String(titleId)]
-    else map[String(titleId)] = Math.round(rate * 100) / 100
-    const keys = Object.keys(map)
-    if (keys.length > 500) for (let i = 0; i < 50; i++) delete map[keys[i]]
+    else putBounded(map, String(titleId), Math.round(rate * 100) / 100)
     localStorage.setItem(playbackRateKeyForActive(), JSON.stringify(map))
   } catch {}
 }
@@ -785,10 +807,15 @@ export function usePrivacyMode() {
   useEffect(() => {
     const onChange = () => setV(loadPrivacyMode())
     window.addEventListener('wardoflix:privacy-mode-changed', onChange)
-    window.addEventListener('wardoflix:profile-changed', onChange)
+    // v1.14.7 — was listening for 'wardoflix:profile-changed', an event
+    // that is never dispatched anywhere. Switching profiles fires
+    // 'wardoflix:profiles-updated' (see setActiveProfileId), so the
+    // privacy toggle's state went stale across a profile switch — it
+    // kept showing the previous profile's flag until a full re-mount.
+    window.addEventListener('wardoflix:profiles-updated', onChange)
     return () => {
       window.removeEventListener('wardoflix:privacy-mode-changed', onChange)
-      window.removeEventListener('wardoflix:profile-changed', onChange)
+      window.removeEventListener('wardoflix:profiles-updated', onChange)
     }
   }, [])
   return v

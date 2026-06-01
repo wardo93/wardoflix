@@ -228,6 +228,10 @@ function scheduleServerRestart() {
     restartTimer = null
     startServer()
   }, delay)
+  // Don't let a pending restart keep the process alive on quit — the
+  // app lifecycle owns liveness, not this timer (matches the other
+  // timers in this file).
+  restartTimer?.unref?.()
 }
 
 function startServer() {
@@ -863,15 +867,24 @@ ipcMain.handle('access:getInfo', () => {
       // for your area (small towns, desktops without WiFi, etc.). The
       // owner can hand this file to friends they want labelled
       // accurately.
+      let raw
       try {
-        const raw = fs.readFileSync(path.join(userData, 'manual-coords.txt'), 'utf8')
-        const m = String(raw).trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
-        if (!m) return null
-        const lat = parseFloat(m[1]), lon = parseFloat(m[2])
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
-        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null
-        return { lat, lon }
-      } catch { return null }
+        raw = fs.readFileSync(path.join(userData, 'manual-coords.txt'), 'utf8')
+      } catch (e) {
+        // ENOENT is the normal case — no override file present, stay
+        // quiet. Anything else (permissions, I/O error) is unexpected
+        // and worth a breadcrumb so a confused owner can diagnose why
+        // their override isn't taking effect.
+        if (e?.code !== 'ENOENT') log('[manual-coords] read failed:', e?.message)
+        return null
+      }
+      const m = String(raw).trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
+      if (!m) { log('[manual-coords] file present but not in "lat,lon" form — ignoring'); return null }
+      const lat = parseFloat(m[1]), lon = parseFloat(m[2])
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        log('[manual-coords] out-of-range lat/lon — ignoring'); return null
+      }
+      return { lat, lon }
     })(),
   }
 })

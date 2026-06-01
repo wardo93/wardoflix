@@ -13,6 +13,19 @@
 
 export const CHANGELOG_ENTRIES = [
   {
+    version: '1.14.7',
+    date: '2026-06-02',
+    title: '🧹 Slow-source clarity + a round of reliability fixes',
+    items: [
+      'Dead/slow sources are clearer now: when a title\'s only sources are too slow to feed playback (a near-dead torrent with a handful of peers), you get an honest "this title\'s sources are too slow or have no seeders right now" message instead of an endless spinner that just looks frozen.',
+      'Switching the audio track mid-movie no longer restarts from the beginning — it keeps your exact spot (same position-tracking fix that finally cured Continue Watching).',
+      'Deleting a profile now fully wipes its data — watch history, resume points, library, watched flags, and per-profile preferences. Previously some of that lingered in storage and a recreated profile could inherit ghost data.',
+      'The Privacy Mode toggle now updates correctly when you switch profiles (it was reading the previous profile\'s setting).',
+      'Under the hood: closed several slow memory leaks (in-memory caches that never pruned), removed a rare crash when a torrent got cleaned up twice at once, and the Continue Watching row now refreshes the instant something is added — no more occasional stale row.',
+      'Removed the temporary resume-diagnostic trace from 1.14.3 now that the fix is confirmed working in the wild.',
+    ],
+  },
+  {
     version: '1.14.6',
     date: '2026-05-18',
     title: '⏩ Seeking forward (past what\'s buffered) now works',
