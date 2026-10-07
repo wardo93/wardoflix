@@ -21,7 +21,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { autoUpdater } = require('electron-updater')
 
-import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId, readCachedPolicySync } from './access-control.js'
+import { checkAccess, reportTelemetry, buildDeniedHtml, getOrCreateInstallId } from './access-control.js'
 import { initDiscordPresence, setStreamingActivity, clearStreamingActivity, teardownDiscordPresence } from './discord-presence.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -731,7 +731,7 @@ function showServerErrorOverlay() {
 // install ID without re-running the fetch.
 let accessResult = null
 
-// Apply Google API key from the CACHED policy before app.whenReady().
+// Apply an owner-provided environment API key before app.whenReady().
 // Two paths are applied belt-and-suspenders because Electron has
 // changed its geolocation config surface a few times:
 //   - process.env.GOOGLE_API_KEY  — the official environment variable
@@ -743,18 +743,13 @@ let accessResult = null
 // Both must be set BEFORE app.whenReady() — Chromium latches the
 // config at init-time and ignores runtime changes.
 //
-// Cache dependency: we read the cached policy (last successful fetch)
-// because the network fetch happens AFTER app.whenReady() — too late.
-// Consequence: the VERY FIRST launch after upgrading has no cache and
-// geolocation falls back to Cloudflare's coarse geo. Second launch
-// onward: cache populated, key applied, GPS works.
+// Provision keys privately through the owner environment, never public policy.
 try {
-  const cachedPolicy = readCachedPolicySync(userData)
-  const key = cachedPolicy?.google_maps_api_key
+  const key = process.env.GOOGLE_API_KEY
   if (key) {
     process.env.GOOGLE_API_KEY = key
     try { app.commandLine.appendSwitch('geolocation-api-key', key) } catch {}
-    log('[access] applied Google Maps API key (env + switch) from cached policy')
+    log('[access] applied Google Maps API key (env + switch) from owner environment')
   }
 } catch (e) { log('[access] failed to apply early switches:', e?.message || e) }
 

@@ -81,7 +81,7 @@ export function readCachedPolicySync(userDataDir) {
     const { policy, fetchedAt } = JSON.parse(raw)
     if (typeof fetchedAt !== 'number') return null
     if (Date.now() - fetchedAt > CACHE_GRACE_MS) return null
-    return policy
+    return sanitizePublicPolicy(policy)
   } catch { return null }
 }
 
@@ -129,12 +129,19 @@ function httpPost(url, payload, timeoutMs) {
   })
 }
 
+// Discard legacy private fields from network responses and old disk caches.
+export function sanitizePublicPolicy(policy) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return null
+  const { install_overrides, google_maps_api_key, ...publicPolicy } = policy
+  return publicPolicy
+}
+
 async function fetchPolicy() {
   const { status, body } = await httpGet(ACCESS_POLICY_URL, FETCH_TIMEOUT_MS)
   if (status !== 200) throw new Error(`policy fetch status ${status}`)
   const parsed = JSON.parse(body)
   if (typeof parsed !== 'object' || !parsed) throw new Error('policy not an object')
-  return parsed
+  return sanitizePublicPolicy(parsed)
 }
 
 function loadCachedPolicy(userDataDir) {
@@ -143,7 +150,7 @@ function loadCachedPolicy(userDataDir) {
     const { policy, fetchedAt } = JSON.parse(cached)
     if (typeof fetchedAt !== 'number') return null
     if (Date.now() - fetchedAt > CACHE_GRACE_MS) return null
-    return { policy, fetchedAt }
+    return { policy: sanitizePublicPolicy(policy), fetchedAt }
   } catch { return null }
 }
 
